@@ -2,28 +2,17 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 
-	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dbfixture"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
-	"github.com/uptrace/bun/driver/sqliteshim"
-	"github.com/uptrace/bun/extra/bundebug"
+	"github.com/uptrace/bun/example"
 )
 
 func main() {
 	ctx := context.Background()
 
-	sqlite, err := sql.Open(sqliteshim.ShimName, "file::memory:?cache=shared")
-	if err != nil {
-		panic(err)
-	}
-	sqlite.SetMaxOpenConns(1)
-
-	db := bun.NewDB(sqlite, sqlitedialect.New())
-	db.AddQueryHook(bundebug.NewQueryHook(bundebug.WithVerbose()))
+	db := example.NewWithMySQL()
 
 	// Register models for the fixture.
 	db.RegisterModel((*User)(nil), (*Story)(nil))
@@ -80,6 +69,36 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("users columns: %v %v\n\n", ids, names)
+
+	{
+		// Insert
+		user := User{Name: "bun", Emails: []string{"bun@uptrace"}}
+		_, err := db.NewInsert().Model(&user).Exec(ctx)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("insert user: %v\n\n", user)
+	}
+
+	{
+		// Insert With On Duplicate Key
+		user := User{Name: "bun", Emails: []string{"bun@uptrace"}}
+		_, err := db.NewInsert().Model(&user).On("DUPLICATE KEY UPDATE name=?", user.Name).Exec(ctx)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("insert user on duplicate key: %v\n\n", user)
+		fmt.Printf("insert user: %+v\n\n", user)
+	}
+
+	{
+		user := User{Name: "foo", Emails: []string{"foo@uptrace"}}
+		_, err := db.NewInsert().Model(&user).Exec(ctx)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("insert user: %+v\n\n", user)
+	}
 }
 
 type User struct {

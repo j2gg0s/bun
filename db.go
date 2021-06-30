@@ -468,7 +468,7 @@ func (tx Tx) NewDropColumn() *DropColumnQuery {
 	return NewDropColumnQuery(tx.db).Conn(tx)
 }
 
-//------------------------------------------------------------------------------0
+//-------------------------------------------------------------------------------
 
 func (db *DB) makeQueryBytes() []byte {
 	// TODO: make this configurable?

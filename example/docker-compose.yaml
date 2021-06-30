@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+  mysql-8.0:
+    image: 'mysql:8.0'
+    ports:
+      - 3306:3306
+    environment:
+      - MYSQL_DATABASE=bun
+      - MYSQL_USER=bun_user
+      - MYSQL_PASSWORD=bun_password
+      - MYSQL_RANDOM_ROOT_PASSWORD="yes"
+  mysql-5.7:
+    image: 'mysql:5.7'
+    ports:
+      - 31306:3306
+    environment:
+      - MYSQL_DATABASE=bun
+      - MYSQL_USER=bun_user
+      - MYSQL_PASSWORD=bun_password
+      - MYSQL_RANDOM_ROOT_PASSWORD="yes"
