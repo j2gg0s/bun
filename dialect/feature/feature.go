@@ -1,6 +1,6 @@
 package feature
 
-import "github.com/uptrace/bun/internal"
+import "github.com/j2gg0s/bun/internal"
 
 type Feature = internal.Flag
 

@@ -7,8 +7,8 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/uptrace/bun/dialect"
-	"github.com/uptrace/bun/internal"
+	"github.com/j2gg0s/bun/dialect"
+	"github.com/j2gg0s/bun/internal"
 )
 
 func FieldAppender(dialect Dialect, field *Field) AppenderFunc {

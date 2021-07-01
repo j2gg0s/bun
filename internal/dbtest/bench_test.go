@@ -7,7 +7,7 @@ import (
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/stretchr/testify/require"
 
-	"github.com/uptrace/bun"
+	"github.com/j2gg0s/bun"
 )
 
 type Bench struct {

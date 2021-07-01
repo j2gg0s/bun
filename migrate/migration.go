@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/uptrace/bun"
+	"github.com/j2gg0s/bun"
 )
 
 type Migration struct {

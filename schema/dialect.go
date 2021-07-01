@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/uptrace/bun/dialect/feature"
+	"github.com/j2gg0s/bun/dialect/feature"
 )
 
 type Dialect interface {

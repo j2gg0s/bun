@@ -1,4 +1,4 @@
-module github.com/uptrace/bun
+module github.com/j2gg0s/bun
 
 go 1.16
 

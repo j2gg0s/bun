@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/uptrace/bun/internal/tagparser"
+	"github.com/j2gg0s/bun/internal/tagparser"
 )
 
 var tagTests = []struct {

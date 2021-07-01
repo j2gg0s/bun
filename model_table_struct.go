@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun/schema"
 )
 
 type structTableModel struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/uptrace/bun"
+	"github.com/j2gg0s/bun"
 )
 
 func init() {

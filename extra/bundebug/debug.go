@@ -10,7 +10,7 @@ import (
 
 	"github.com/fatih/color"
 
-	"github.com/uptrace/bun"
+	"github.com/j2gg0s/bun"
 )
 
 type ConfigOption func(*QueryHook)

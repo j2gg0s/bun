@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun/schema"
 )
 
 func scanner(typ reflect.Type) schema.ScannerFunc {

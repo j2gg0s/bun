@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/uptrace/bun"
+	"github.com/j2gg0s/bun"
 )
 
 const pingChannel = "bun:ping"

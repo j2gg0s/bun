@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/uptrace/bun/dialect"
-	"github.com/uptrace/bun/internal"
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun/dialect"
+	"github.com/j2gg0s/bun/internal"
+	"github.com/j2gg0s/bun/schema"
 )
 
 type union struct {

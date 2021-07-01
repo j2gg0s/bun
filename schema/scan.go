@@ -11,8 +11,8 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
-	"github.com/uptrace/bun/extra/bunjson"
-	"github.com/uptrace/bun/internal"
+	"github.com/j2gg0s/bun/extra/bunjson"
+	"github.com/j2gg0s/bun/internal"
 )
 
 var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()

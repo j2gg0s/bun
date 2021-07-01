@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/uptrace/bun/dialect"
-	"github.com/uptrace/bun/extra/bunjson"
-	"github.com/uptrace/bun/internal"
+	"github.com/j2gg0s/bun/dialect"
+	"github.com/j2gg0s/bun/extra/bunjson"
+	"github.com/j2gg0s/bun/internal"
 )
 
 var (

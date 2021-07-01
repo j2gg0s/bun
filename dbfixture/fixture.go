@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/schema"
 )
 
 type FixtureOption func(l *Fixture)

@@ -1,10 +1,10 @@
-module github.com/uptrace/bun/extra/bundebug
+module github.com/j2gg0s/bun/extra/bundebug
 
 go 1.16
 
-replace github.com/uptrace/bun => ../..
+replace github.com/j2gg0s/bun => ../..
 
 require (
 	github.com/fatih/color v1.10.0
-	github.com/uptrace/bun v0.1.1
+	github.com/j2gg0s/bun v0.1.1
 )

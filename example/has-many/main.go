@@ -7,9 +7,9 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
-	"github.com/uptrace/bun/extra/bundebug"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/dialect/sqlitedialect"
+	"github.com/j2gg0s/bun/extra/bundebug"
 )
 
 type Profile struct {

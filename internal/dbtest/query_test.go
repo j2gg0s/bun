@@ -10,8 +10,8 @@ import (
 
 	"github.com/bradleyjkemp/cupaloy"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/schema"
 )
 
 func init() {

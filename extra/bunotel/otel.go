@@ -11,12 +11,12 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect"
-	"github.com/uptrace/bun/schema"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/dialect"
+	"github.com/j2gg0s/bun/schema"
 )
 
-var tracer = otel.Tracer("github.com/uptrace/bun")
+var tracer = otel.Tracer("github.com/j2gg0s/bun")
 
 type ConfigOption func(*QueryHook)
 
@@ -50,7 +50,7 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 
 	operation := eventOperation(event)
 	query := eventQuery(event, operation)
-	fn, file, line := funcFileLine("github.com/uptrace/bun")
+	fn, file, line := funcFileLine("github.com/j2gg0s/bun")
 
 	attrs := make([]attribute.KeyValue, 0, 10)
 	attrs = append(attrs,

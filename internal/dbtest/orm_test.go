@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dbfixture"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/dbfixture"
 )
 
 func TestORM(t *testing.T) {

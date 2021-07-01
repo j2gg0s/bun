@@ -3,7 +3,7 @@ package dialect_test
 import (
 	"testing"
 
-	"github.com/uptrace/bun/dialect"
+	"github.com/j2gg0s/bun/dialect"
 )
 
 func BenchmarkAppendString(b *testing.B) {

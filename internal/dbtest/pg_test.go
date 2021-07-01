@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/j2gg0s/bun"
+	"github.com/j2gg0s/bun/dialect/pgdialect"
 )
 
 func TestPGArray(t *testing.T) {

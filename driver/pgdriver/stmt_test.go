@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/j2gg0s/bun/driver/pgdriver"
 )
 
 func TestSQLOpen(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/uptrace/bun/internal"
-	"github.com/uptrace/bun/internal/parser"
+	"github.com/j2gg0s/bun/internal"
+	"github.com/j2gg0s/bun/internal/parser"
 )
 
 func AppendError(b []byte, err error) []byte {
