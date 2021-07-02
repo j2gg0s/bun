@@ -25,6 +25,10 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/stretchr/testify/require"
+
+	"github.com/j2gg0s/otsql"
+	"github.com/j2gg0s/otsql/hook/metric"
+	"github.com/j2gg0s/otsql/hook/trace"
 )
 
 var ctx = context.TODO()
@@ -47,7 +51,37 @@ var allDBs = map[string]func(tb testing.TB) *bun.DB{
 	sqliteName:  sqlite,
 }
 
+func otsqlHook(tb testing.TB) otsql.Option {
+	mhook, err := metric.New()
+	require.NoError(tb, err)
+	return otsql.WithHooks(
+		trace.New(
+			trace.WithAllowRoot(true),
+			trace.WithQuery(true),
+			trace.WithQueryParams(true),
+		),
+		mhook,
+	)
+}
+
 func pg(tb testing.TB) *bun.DB {
+	dsn := os.Getenv("PG")
+	if dsn == "" {
+		dsn = "postgres://postgres:postgres@localhost:5432/test?sslmode=disable"
+	}
+
+	sqldb := sql.OpenDB(otsql.WrapConnector(
+		pgdriver.NewConnector(pgdriver.WithDSN(dsn)),
+		otsqlHook(tb),
+	))
+	tb.Cleanup(func() {
+		assert.NoError(tb, sqldb.Close())
+	})
+
+	return bun.NewDB(sqldb, pgdialect.New())
+}
+
+func rawPG(tb testing.TB) *bun.DB {
 	dsn := os.Getenv("PG")
 	if dsn == "" {
 		dsn = "postgres://postgres:postgres@localhost:5432/test?sslmode=disable"
@@ -98,7 +132,10 @@ func mysql8(tb testing.TB) *bun.DB {
 		dsn = "user:pass@/test"
 	}
 
-	sqldb, err := sql.Open("mysql", dsn)
+	dname, err := otsql.Register("mysql", otsqlHook(tb))
+	require.NoError(tb, err)
+
+	sqldb, err := sql.Open(dname, dsn)
 	require.NoError(tb, err)
 	tb.Cleanup(func() {
 		require.NoError(tb, sqldb.Close())
@@ -162,7 +199,12 @@ func mariadb(tb testing.TB) *bun.DB {
 }
 
 func sqlite(tb testing.TB) *bun.DB {
-	sqldb, err := sql.Open(sqliteshim.DriverName(), filepath.Join(tb.TempDir(), "sqlite.db"))
+	dname, err := otsql.Register(
+		sqliteshim.DriverName(), otsqlHook(tb),
+	)
+	require.NoError(tb, err)
+
+	sqldb, err := sql.Open(dname, filepath.Join(tb.TempDir(), "sqlite.db"))
 	require.NoError(tb, err)
 	tb.Cleanup(func() {
 		require.NoError(tb, sqldb.Close())
@@ -972,4 +1014,8 @@ func testUpsert(t *testing.T, db *bun.DB) {
 	err = db.NewSelect().Model(model).WherePK().Scan(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "world", model.Str)
+}
+func init() {
+	InitTracer()
+	InitMeter()
 }

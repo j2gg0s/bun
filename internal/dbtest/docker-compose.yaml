@@ -56,3 +56,8 @@ services:
       timeout: 5s
       interval: 10s
       retries: 3
+  jaeger:
+    image: 'jaegertracing/all-in-one:latest'
+    ports:
+      - 14268:14268
+      - 16686:16686

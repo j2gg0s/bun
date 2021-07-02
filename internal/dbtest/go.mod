@@ -23,7 +23,9 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.4.1
 	github.com/go-sql-driver/mysql v1.5.0
 	github.com/google/uuid v1.3.0
+	github.com/j2gg0s/otsql v0.12.1
 	github.com/jackc/pgx/v4 v4.11.0
+	github.com/prometheus/client_golang v1.11.0
 	github.com/stretchr/testify v1.7.0
 	github.com/uptrace/bun v1.0.18
 	github.com/uptrace/bun/dbfixture v1.0.18
@@ -33,4 +35,9 @@ require (
 	github.com/uptrace/bun/driver/pgdriver v1.0.18
 	github.com/uptrace/bun/driver/sqliteshim v1.0.18
 	github.com/uptrace/bun/extra/bundebug v1.0.18
+	go.opentelemetry.io/otel v0.20.0
+	go.opentelemetry.io/otel/exporters/metric/prometheus v0.20.0
+	go.opentelemetry.io/otel/exporters/trace/jaeger v0.20.0
+	go.opentelemetry.io/otel/sdk v0.20.0
+	go.opentelemetry.io/otel/sdk/metric v0.20.0
 )

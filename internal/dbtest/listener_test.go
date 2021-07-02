@@ -13,7 +13,7 @@ import (
 func TestListenerReceive(t *testing.T) {
 	ctx := context.Background()
 
-	db := pg(t)
+	db := rawPG(t)
 
 	ln := pgdriver.NewListener(db)
 
@@ -53,7 +53,7 @@ func TestListenerReceive(t *testing.T) {
 func TestListenerChannel(t *testing.T) {
 	ctx := context.Background()
 
-	db := pg(t)
+	db := rawPG(t)
 
 	ln := pgdriver.NewListener(db)
 	ch := ln.Channel()
