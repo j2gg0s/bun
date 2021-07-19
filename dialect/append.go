@@ -121,7 +121,7 @@ func AppendJSON(b, jsonb []byte) []byte {
 			if p.SkipBytes([]byte("u0000")) {
 				b = append(b, "\\\\u0000"...)
 			} else {
-				b = append(b, '\\')
+				b = append(b, `\\`...)
 				if p.Valid() {
 					b = append(b, p.Read())
 				}
