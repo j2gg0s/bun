@@ -75,7 +75,7 @@ func pg(tb testing.TB) *bun.DB {
 		otsqlHook(tb),
 	))
 	tb.Cleanup(func() {
-		assert.NoError(tb, sqldb.Close())
+		require.NoError(tb, sqldb.Close())
 	})
 
 	return bun.NewDB(sqldb, pgdialect.New())
