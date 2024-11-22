@@ -16,6 +16,8 @@ type TruncateTableQuery struct {
 	continueIdentity bool
 }
 
+var _ Query = (*TruncateTableQuery)(nil)
+
 func NewTruncateTableQuery(db *DB) *TruncateTableQuery {
 	q := &TruncateTableQuery{
 		baseQuery: baseQuery{
@@ -32,7 +34,12 @@ func (q *TruncateTableQuery) Conn(db IConn) *TruncateTableQuery {
 }
 
 func (q *TruncateTableQuery) Model(model interface{}) *TruncateTableQuery {
-	q.setTableModel(model)
+	q.setModel(model)
+	return q
+}
+
+func (q *TruncateTableQuery) Err(err error) *TruncateTableQuery {
+	q.setErr(err)
 	return q
 }
 
@@ -50,10 +57,20 @@ func (q *TruncateTableQuery) TableExpr(query string, args ...interface{}) *Trunc
 	return q
 }
 
+func (q *TruncateTableQuery) ModelTableExpr(query string, args ...interface{}) *TruncateTableQuery {
+	q.modelTableName = schema.SafeQuery(query, args)
+	return q
+}
+
 //------------------------------------------------------------------------------
 
 func (q *TruncateTableQuery) ContinueIdentity() *TruncateTableQuery {
 	q.continueIdentity = true
+	return q
+}
+
+func (q *TruncateTableQuery) Cascade() *TruncateTableQuery {
+	q.cascade = true
 	return q
 }
 

@@ -22,6 +22,7 @@ import (
 )
 
 // https://www.postgresql.org/docs/current/protocol-message-formats.html
+//
 //nolint:deadcode,varcheck,unused
 const (
 	commandCompleteMsg  = 'C'
@@ -121,7 +122,11 @@ func enableSSL(ctx context.Context, cn *Conn, tlsConf *tls.Config) error {
 		return errors.New("pgdriver: SSL is not enabled on the server")
 	}
 
-	cn.netConn = tls.Client(cn.netConn, tlsConf)
+	tlsCN := tls.Client(cn.netConn, tlsConf)
+	if err := tlsCN.HandshakeContext(ctx); err != nil {
+		return fmt.Errorf("pgdriver: TLS handshake failed: %w", err)
+	}
+	cn.netConn = tlsCN
 	rd.Reset(cn.netConn)
 
 	return nil
@@ -1022,7 +1027,14 @@ func readError(rd *reader) (error, error) {
 		}
 		m[c] = s
 	}
-	return Error{m: m}, nil
+	switch err := (Error{m: m}); err.Field('V') {
+	case "FATAL", "PANIC":
+		// Return this as an error and stop processing.
+		return nil, err
+	default:
+		// Return this as an error message and continue processing.
+		return err, nil
+	}
 }
 
 //------------------------------------------------------------------------------

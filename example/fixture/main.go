@@ -16,17 +16,18 @@ import (
 )
 
 type User struct {
-	ID        int64
+	ID        int64 `bun:",pk,autoincrement"`
 	Name      sql.NullString
 	Email     string
+	Attrs     map[string]interface{} `bun:",nullzero"`
 	CreatedAt time.Time
 	UpdatedAt sql.NullTime
 }
 
 type Org struct {
-	ID      int64
+	ID      int64 `bun:",pk,autoincrement"`
 	Name    string
-	OwnerID int64
+	OwnerID int64 `yaml:"owner_id"`
 	Owner   *User `bun:"rel:belongs-to"`
 }
 

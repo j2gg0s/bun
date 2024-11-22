@@ -27,7 +27,19 @@ func (s Safe) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
 
 //------------------------------------------------------------------------------
 
-// Ident represents a SQL identifier, for example, table or column name.
+// Name represents a single SQL name, for example, a column name.
+type Name string
+
+var _ QueryAppender = (*Name)(nil)
+
+func (s Name) AppendQuery(fmter Formatter, b []byte) ([]byte, error) {
+	return fmter.AppendName(b, string(s)), nil
+}
+
+//------------------------------------------------------------------------------
+
+// Ident represents a SQL identifier, for example,
+// a fully qualified column name such as `table_name.col_name`.
 type Ident string
 
 var _ QueryAppender = (*Ident)(nil)
@@ -49,7 +61,7 @@ func SafeQuery(query string, args []interface{}) QueryWithArgs {
 	if args == nil {
 		args = make([]interface{}, 0)
 	} else if len(query) > 0 && strings.IndexByte(query, '?') == -1 {
-		internal.Warn.Printf("query %q has args %v, but no placeholders", query, args)
+		internal.Warn.Printf("query %q has %v args, but no placeholders", query, args)
 	}
 	return QueryWithArgs{
 		Query: query,

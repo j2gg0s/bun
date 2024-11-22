@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strings"
@@ -16,8 +17,9 @@ import (
 type Migration struct {
 	bun.BaseModel
 
-	ID         int64
+	ID         int64 `bun:",pk,autoincrement"`
 	Name       string
+	Comment    string `bun:"-"`
 	GroupID    int64
 	MigratedAt time.Time `bun:",notnull,nullzero,default:current_timestamp"`
 
@@ -25,11 +27,11 @@ type Migration struct {
 	Down MigrationFunc `bun:"-"`
 }
 
-func (m *Migration) String() string {
-	return m.Name
+func (m Migration) String() string {
+	return fmt.Sprintf("%s_%s", m.Name, m.Comment)
 }
 
-func (m *Migration) IsApplied() bool {
+func (m Migration) IsApplied() bool {
 	return m.ID > 0
 }
 
@@ -37,73 +39,92 @@ type MigrationFunc func(ctx context.Context, db *bun.DB) error
 
 func NewSQLMigrationFunc(fsys fs.FS, name string) MigrationFunc {
 	return func(ctx context.Context, db *bun.DB) error {
-		isTx := strings.HasSuffix(name, ".tx.up.sql") || strings.HasSuffix(name, ".tx.down.sql")
-
 		f, err := fsys.Open(name)
 		if err != nil {
 			return err
 		}
 
-		scanner := bufio.NewScanner(f)
-		var queries []string
+		isTx := strings.HasSuffix(name, ".tx.up.sql") || strings.HasSuffix(name, ".tx.down.sql")
+		return Exec(ctx, db, f, isTx)
+	}
+}
 
-		var query []byte
-		for scanner.Scan() {
-			b := scanner.Bytes()
+// Exec reads and executes the SQL migration in the f.
+func Exec(ctx context.Context, db *bun.DB, f io.Reader, isTx bool) error {
+	scanner := bufio.NewScanner(f)
+	var queries []string
 
-			const prefix = "--bun:"
-			if bytes.HasPrefix(b, []byte(prefix)) {
-				b = b[len(prefix):]
-				if bytes.Equal(b, []byte("split")) {
-					queries = append(queries, string(query))
-					query = query[:0]
-					continue
-				}
-				return fmt.Errorf("bun: unknown directive: %q", b)
+	var query []byte
+	for scanner.Scan() {
+		b := scanner.Bytes()
+
+		const prefix = "--bun:"
+		if bytes.HasPrefix(b, []byte(prefix)) {
+			b = b[len(prefix):]
+			if bytes.Equal(b, []byte("split")) {
+				queries = append(queries, string(query))
+				query = query[:0]
+				continue
 			}
-
-			query = append(query, b...)
-			query = append(query, '\n')
+			return fmt.Errorf("bun: unknown directive: %q", b)
 		}
 
-		if len(query) > 0 {
-			queries = append(queries, string(query))
-		}
-		if err := scanner.Err(); err != nil {
+		query = append(query, b...)
+		query = append(query, '\n')
+	}
+
+	if len(query) > 0 {
+		queries = append(queries, string(query))
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	var idb bun.IConn
+
+	if isTx {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
 			return err
 		}
-
-		var idb bun.IConn
-
-		if isTx {
-			tx, err := db.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			idb = tx
-		} else {
-			conn, err := db.Conn(ctx)
-			if err != nil {
-				return err
-			}
-			idb = conn
+		idb = tx
+	} else {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
 		}
+		idb = conn
+	}
 
-		for _, q := range queries {
-			_, err = idb.ExecContext(ctx, q)
-			if err != nil {
-				return err
-			}
-		}
+	var retErr error
+	var execErr error
 
+	defer func() {
 		if tx, ok := idb.(bun.Tx); ok {
-			return tx.Commit()
-		} else if conn, ok := idb.(bun.Conn); ok {
-			return conn.Close()
+			if execErr != nil {
+				retErr = tx.Rollback()
+			} else {
+				retErr = tx.Commit()
+			}
+			return
+		}
+
+		if conn, ok := idb.(bun.Conn); ok {
+			retErr = conn.Close()
+			return
 		}
 
 		panic("not reached")
+	}()
+
+	for _, q := range queries {
+		_, execErr = idb.ExecContext(ctx, q)
+		if execErr != nil {
+			return execErr
+		}
 	}
+
+	return retErr
 }
 
 const goTemplate = `package %s
@@ -137,6 +158,11 @@ SELECT 1
 SELECT 2
 `
 
+const transactionalSQLTemplate = `SET statement_timeout = 0;
+
+SELECT 1;
+`
+
 //------------------------------------------------------------------------------
 
 type MigrationSlice []Migration
@@ -156,7 +182,7 @@ func (ms MigrationSlice) String() string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(ms[i].Name)
+		sb.WriteString(ms[i].String())
 	}
 
 	return sb.String()
@@ -222,11 +248,11 @@ type MigrationGroup struct {
 	Migrations MigrationSlice
 }
 
-func (g *MigrationGroup) IsZero() bool {
+func (g MigrationGroup) IsZero() bool {
 	return g.ID == 0 && len(g.Migrations) == 0
 }
 
-func (g *MigrationGroup) String() string {
+func (g MigrationGroup) String() string {
 	if g.IsZero() {
 		return "nil"
 	}

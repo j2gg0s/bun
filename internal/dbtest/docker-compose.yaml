@@ -30,7 +30,7 @@ services:
       interval: 10s
       retries: 3
   postgres:
-    image: postgres
+    image: postgres:15
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -53,6 +53,21 @@ services:
       - 13306:3306
     healthcheck:
       test: ['CMD', 'mariadb-admin', 'ping']
+      timeout: 5s
+      interval: 10s
+      retries: 3
+  mssql:
+    image: mssql-local
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=passWORD1
+      - MSSQL_DB=test
+      - MSSQL_USER=sa
+      - MSSQL_PASSWORD=passWORD1
+    ports:
+      - 14339:1433
+    healthcheck:
+      test: ['CMD', 'ping']
       timeout: 5s
       interval: 10s
       retries: 3

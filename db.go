@@ -2,7 +2,9 @@ package bun
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"strings"
@@ -32,6 +34,7 @@ func WithDiscardUnknownColumns() DBOption {
 
 type DB struct {
 	*sql.DB
+
 	dialect  schema.Dialect
 	features feature.Feature
 
@@ -79,6 +82,10 @@ func (db *DB) NewValues(model interface{}) *ValuesQuery {
 	return NewValuesQuery(db, model)
 }
 
+func (db *DB) NewMerge() *MergeQuery {
+	return NewMergeQuery(db)
+}
+
 func (db *DB) NewSelect() *SelectQuery {
 	return NewSelectQuery(db)
 }
@@ -93,6 +100,10 @@ func (db *DB) NewUpdate() *UpdateQuery {
 
 func (db *DB) NewDelete() *DeleteQuery {
 	return NewDeleteQuery(db)
+}
+
+func (db *DB) NewRaw(query string, args ...interface{}) *RawQuery {
+	return NewRawQuery(db, query, args...)
 }
 
 func (db *DB) NewCreateTable() *CreateTableQuery {
@@ -125,7 +136,7 @@ func (db *DB) NewDropColumn() *DropColumnQuery {
 
 func (db *DB) ResetModel(ctx context.Context, models ...interface{}) error {
 	for _, model := range models {
-		if _, err := db.NewDropTable().Model(model).IfExists().Exec(ctx); err != nil {
+		if _, err := db.NewDropTable().Model(model).IfExists().Cascade().Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := db.NewCreateTable().Model(model).Exec(ctx); err != nil {
@@ -140,13 +151,19 @@ func (db *DB) Dialect() schema.Dialect {
 }
 
 func (db *DB) ScanRows(ctx context.Context, rows *sql.Rows, dest ...interface{}) error {
+	defer rows.Close()
+
 	model, err := newModel(db, dest)
 	if err != nil {
 		return err
 	}
 
 	_, err = model.ScanRows(ctx, rows)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return rows.Err()
 }
 
 func (db *DB) ScanRow(ctx context.Context, rows *sql.Rows, dest ...interface{}) error {
@@ -178,6 +195,8 @@ func (db *DB) Table(typ reflect.Type) *schema.Table {
 	return db.dialect.Tables().Get(typ)
 }
 
+// RegisterModel registers models by name so they can be referenced in table relations
+// and fixtures.
 func (db *DB) RegisterModel(models ...interface{}) {
 	db.dialect.Tables().Register(models...)
 }
@@ -201,6 +220,20 @@ func (db *DB) Formatter() schema.Formatter {
 	return db.fmter
 }
 
+// UpdateFQN returns a fully qualified column name. For MySQL, it returns the column name with
+// the table alias. For other RDBMS, it returns just the column name.
+func (db *DB) UpdateFQN(alias, column string) Ident {
+	if db.HasFeature(feature.UpdateMultiTable) {
+		return Ident(alias + "." + column)
+	}
+	return Ident(column)
+}
+
+// HasFeature uses feature package to report whether the underlying DBMS supports this feature.
+func (db *DB) HasFeature(feat feature.Feature) bool {
+	return db.fmter.HasFeature(feat)
+}
+
 //------------------------------------------------------------------------------
 
 func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
@@ -210,8 +243,9 @@ func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
 func (db *DB) ExecContext(
 	ctx context.Context, query string, args ...interface{},
 ) (sql.Result, error) {
-	ctx, event := db.beforeQuery(ctx, nil, query, args, nil)
-	res, err := db.DB.ExecContext(ctx, db.format(query, args))
+	formattedQuery := db.format(query, args)
+	ctx, event := db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	res, err := db.DB.ExecContext(ctx, formattedQuery)
 	db.afterQuery(ctx, event, res, err)
 	return res, err
 }
@@ -223,8 +257,9 @@ func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 func (db *DB) QueryContext(
 	ctx context.Context, query string, args ...interface{},
 ) (*sql.Rows, error) {
-	ctx, event := db.beforeQuery(ctx, nil, query, args, nil)
-	rows, err := db.DB.QueryContext(ctx, db.format(query, args))
+	formattedQuery := db.format(query, args)
+	ctx, event := db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	rows, err := db.DB.QueryContext(ctx, formattedQuery)
 	db.afterQuery(ctx, event, nil, err)
 	return rows, err
 }
@@ -234,8 +269,9 @@ func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 }
 
 func (db *DB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	ctx, event := db.beforeQuery(ctx, nil, query, args, nil)
-	row := db.DB.QueryRowContext(ctx, db.format(query, args))
+	formattedQuery := db.format(query, args)
+	ctx, event := db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	row := db.DB.QueryRowContext(ctx, formattedQuery)
 	db.afterQuery(ctx, event, nil, row.Err())
 	return row
 }
@@ -265,8 +301,9 @@ func (db *DB) Conn(ctx context.Context) (Conn, error) {
 func (c Conn) ExecContext(
 	ctx context.Context, query string, args ...interface{},
 ) (sql.Result, error) {
-	ctx, event := c.db.beforeQuery(ctx, nil, query, args, nil)
-	res, err := c.Conn.ExecContext(ctx, c.db.format(query, args))
+	formattedQuery := c.db.format(query, args)
+	ctx, event := c.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	res, err := c.Conn.ExecContext(ctx, formattedQuery)
 	c.db.afterQuery(ctx, event, res, err)
 	return res, err
 }
@@ -274,21 +311,31 @@ func (c Conn) ExecContext(
 func (c Conn) QueryContext(
 	ctx context.Context, query string, args ...interface{},
 ) (*sql.Rows, error) {
-	ctx, event := c.db.beforeQuery(ctx, nil, query, args, nil)
-	rows, err := c.Conn.QueryContext(ctx, c.db.format(query, args))
+	formattedQuery := c.db.format(query, args)
+	ctx, event := c.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	rows, err := c.Conn.QueryContext(ctx, formattedQuery)
 	c.db.afterQuery(ctx, event, nil, err)
 	return rows, err
 }
 
 func (c Conn) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	ctx, event := c.db.beforeQuery(ctx, nil, query, args, nil)
-	row := c.Conn.QueryRowContext(ctx, c.db.format(query, args))
+	formattedQuery := c.db.format(query, args)
+	ctx, event := c.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	row := c.Conn.QueryRowContext(ctx, formattedQuery)
 	c.db.afterQuery(ctx, event, nil, row.Err())
 	return row
 }
 
+func (c Conn) Dialect() schema.Dialect {
+	return c.db.Dialect()
+}
+
 func (c Conn) NewValues(model interface{}) *ValuesQuery {
 	return NewValuesQuery(c.db, model).Conn(c)
+}
+
+func (c Conn) NewMerge() *MergeQuery {
+	return NewMergeQuery(c.db).Conn(c)
 }
 
 func (c Conn) NewSelect() *SelectQuery {
@@ -305,6 +352,10 @@ func (c Conn) NewUpdate() *UpdateQuery {
 
 func (c Conn) NewDelete() *DeleteQuery {
 	return NewDeleteQuery(c.db).Conn(c)
+}
+
+func (c Conn) NewRaw(query string, args ...interface{}) *RawQuery {
+	return NewRawQuery(c.db, query, args...).Conn(c)
 }
 
 func (c Conn) NewCreateTable() *CreateTableQuery {
@@ -335,6 +386,46 @@ func (c Conn) NewDropColumn() *DropColumnQuery {
 	return NewDropColumnQuery(c.db).Conn(c)
 }
 
+// RunInTx runs the function in a transaction. If the function returns an error,
+// the transaction is rolled back. Otherwise, the transaction is committed.
+func (c Conn) RunInTx(
+	ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context, tx Tx) error,
+) error {
+	tx, err := c.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	var done bool
+
+	defer func() {
+		if !done {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+
+	done = true
+	return tx.Commit()
+}
+
+func (c Conn) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
+	ctx, event := c.db.beforeQuery(ctx, nil, "BEGIN", nil, "BEGIN", nil)
+	tx, err := c.Conn.BeginTx(ctx, opts)
+	c.db.afterQuery(ctx, event, nil, err)
+	if err != nil {
+		return Tx{}, err
+	}
+	return Tx{
+		ctx: ctx,
+		db:  c.db,
+		Tx:  tx,
+	}, nil
+}
+
 //------------------------------------------------------------------------------
 
 type Stmt struct {
@@ -356,7 +447,10 @@ func (db *DB) PrepareContext(ctx context.Context, query string) (Stmt, error) {
 //------------------------------------------------------------------------------
 
 type Tx struct {
-	db *DB
+	ctx context.Context
+	db  *DB
+	// name is the name of a savepoint
+	name string
 	*sql.Tx
 }
 
@@ -369,11 +463,20 @@ func (db *DB) RunInTx(
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck
+
+	var done bool
+
+	defer func() {
+		if !done {
+			_ = tx.Rollback()
+		}
+	}()
 
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}
+
+	done = true
 	return tx.Commit()
 }
 
@@ -382,14 +485,63 @@ func (db *DB) Begin() (Tx, error) {
 }
 
 func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
+	ctx, event := db.beforeQuery(ctx, nil, "BEGIN", nil, "BEGIN", nil)
 	tx, err := db.DB.BeginTx(ctx, opts)
+	db.afterQuery(ctx, event, nil, err)
 	if err != nil {
 		return Tx{}, err
 	}
 	return Tx{
-		db: db,
-		Tx: tx,
+		ctx: ctx,
+		db:  db,
+		Tx:  tx,
 	}, nil
+}
+
+func (tx Tx) Commit() error {
+	if tx.name == "" {
+		return tx.commitTX()
+	}
+	return tx.commitSP()
+}
+
+func (tx Tx) commitTX() error {
+	ctx, event := tx.db.beforeQuery(tx.ctx, nil, "COMMIT", nil, "COMMIT", nil)
+	err := tx.Tx.Commit()
+	tx.db.afterQuery(ctx, event, nil, err)
+	return err
+}
+
+func (tx Tx) commitSP() error {
+	if tx.Dialect().Features().Has(feature.MSSavepoint) {
+		return nil
+	}
+	query := "RELEASE SAVEPOINT " + tx.name
+	_, err := tx.ExecContext(tx.ctx, query)
+	return err
+}
+
+func (tx Tx) Rollback() error {
+	if tx.name == "" {
+		return tx.rollbackTX()
+	}
+	return tx.rollbackSP()
+}
+
+func (tx Tx) rollbackTX() error {
+	ctx, event := tx.db.beforeQuery(tx.ctx, nil, "ROLLBACK", nil, "ROLLBACK", nil)
+	err := tx.Tx.Rollback()
+	tx.db.afterQuery(ctx, event, nil, err)
+	return err
+}
+
+func (tx Tx) rollbackSP() error {
+	query := "ROLLBACK TO SAVEPOINT " + tx.name
+	if tx.Dialect().Features().Has(feature.MSSavepoint) {
+		query = "ROLLBACK TRANSACTION " + tx.name
+	}
+	_, err := tx.ExecContext(tx.ctx, query)
+	return err
 }
 
 func (tx Tx) Exec(query string, args ...interface{}) (sql.Result, error) {
@@ -399,8 +551,9 @@ func (tx Tx) Exec(query string, args ...interface{}) (sql.Result, error) {
 func (tx Tx) ExecContext(
 	ctx context.Context, query string, args ...interface{},
 ) (sql.Result, error) {
-	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, nil)
-	res, err := tx.Tx.ExecContext(ctx, tx.db.format(query, args))
+	formattedQuery := tx.db.format(query, args)
+	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	res, err := tx.Tx.ExecContext(ctx, formattedQuery)
 	tx.db.afterQuery(ctx, event, res, err)
 	return res, err
 }
@@ -412,8 +565,9 @@ func (tx Tx) Query(query string, args ...interface{}) (*sql.Rows, error) {
 func (tx Tx) QueryContext(
 	ctx context.Context, query string, args ...interface{},
 ) (*sql.Rows, error) {
-	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, nil)
-	rows, err := tx.Tx.QueryContext(ctx, tx.db.format(query, args))
+	formattedQuery := tx.db.format(query, args)
+	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	rows, err := tx.Tx.QueryContext(ctx, formattedQuery)
 	tx.db.afterQuery(ctx, event, nil, err)
 	return rows, err
 }
@@ -423,16 +577,79 @@ func (tx Tx) QueryRow(query string, args ...interface{}) *sql.Row {
 }
 
 func (tx Tx) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, nil)
-	row := tx.Tx.QueryRowContext(ctx, tx.db.format(query, args))
+	formattedQuery := tx.db.format(query, args)
+	ctx, event := tx.db.beforeQuery(ctx, nil, query, args, formattedQuery, nil)
+	row := tx.Tx.QueryRowContext(ctx, formattedQuery)
 	tx.db.afterQuery(ctx, event, nil, row.Err())
 	return row
 }
 
 //------------------------------------------------------------------------------
 
+func (tx Tx) Begin() (Tx, error) {
+	return tx.BeginTx(tx.ctx, nil)
+}
+
+// BeginTx will save a point in the running transaction.
+func (tx Tx) BeginTx(ctx context.Context, _ *sql.TxOptions) (Tx, error) {
+	// mssql savepoint names are limited to 32 characters
+	sp := make([]byte, 14)
+	_, err := rand.Read(sp)
+	if err != nil {
+		return Tx{}, err
+	}
+
+	qName := "SP_" + hex.EncodeToString(sp)
+	query := "SAVEPOINT " + qName
+	if tx.Dialect().Features().Has(feature.MSSavepoint) {
+		query = "SAVE TRANSACTION " + qName
+	}
+	_, err = tx.ExecContext(ctx, query)
+	if err != nil {
+		return Tx{}, err
+	}
+	return Tx{
+		ctx:  ctx,
+		db:   tx.db,
+		Tx:   tx.Tx,
+		name: qName,
+	}, nil
+}
+
+func (tx Tx) RunInTx(
+	ctx context.Context, _ *sql.TxOptions, fn func(ctx context.Context, tx Tx) error,
+) error {
+	sp, err := tx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	var done bool
+
+	defer func() {
+		if !done {
+			_ = sp.Rollback()
+		}
+	}()
+
+	if err := fn(ctx, sp); err != nil {
+		return err
+	}
+
+	done = true
+	return sp.Commit()
+}
+
+func (tx Tx) Dialect() schema.Dialect {
+	return tx.db.Dialect()
+}
+
 func (tx Tx) NewValues(model interface{}) *ValuesQuery {
 	return NewValuesQuery(tx.db, model).Conn(tx)
+}
+
+func (tx Tx) NewMerge() *MergeQuery {
+	return NewMergeQuery(tx.db).Conn(tx)
 }
 
 func (tx Tx) NewSelect() *SelectQuery {
@@ -449,6 +666,10 @@ func (tx Tx) NewUpdate() *UpdateQuery {
 
 func (tx Tx) NewDelete() *DeleteQuery {
 	return NewDeleteQuery(tx.db).Conn(tx)
+}
+
+func (tx Tx) NewRaw(query string, args ...interface{}) *RawQuery {
+	return NewRawQuery(tx.db, query, args...).Conn(tx)
 }
 
 func (tx Tx) NewCreateTable() *CreateTableQuery {
@@ -482,6 +703,5 @@ func (tx Tx) NewDropColumn() *DropColumnQuery {
 //------------------------------------------------------------------------------
 
 func (db *DB) makeQueryBytes() []byte {
-	// TODO: make this configurable?
-	return make([]byte, 0, 4096)
+	return internal.MakeQueryBytes()
 }

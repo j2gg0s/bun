@@ -12,7 +12,7 @@ import (
 )
 
 type Item struct {
-	ID       int64  `bun:",pk"`
+	ID       int64  `bun:",pk,autoincrement"`
 	Children []Item `bun:"m2m:item_to_items,join:Item=Child"`
 }
 
@@ -74,7 +74,7 @@ func createSchema(ctx context.Context, db *bun.DB) error {
 		(*ItemToItem)(nil),
 	}
 	for _, model := range models {
-		if _, err := db.NewCreateTable().Model(model).Exec(ctx); err != nil {
+		if err := db.ResetModel(ctx, model); err != nil {
 			return err
 		}
 	}

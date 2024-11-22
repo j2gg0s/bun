@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -158,8 +157,11 @@ func (cn *Conn) write(ctx context.Context, wb *writeBuffer) error {
 	cn.setWriteDeadline(ctx, -1)
 
 	n, err := cn.netConn.Write(wb.Bytes)
+	wb.Reset()
+
 	if err != nil {
 		if n == 0 {
+			Logger.Printf(ctx, "pgdriver: Conn.Write failed (zero-length): %s", err)
 			return driver.ErrBadConn
 		}
 		return err
@@ -210,15 +212,23 @@ var _ driver.ConnBeginTx = (*Conn)(nil)
 
 func (cn *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	// No need to check if the conn is closed. ExecContext below handles that.
+	isolation := sql.IsolationLevel(opts.Isolation)
 
-	if sql.IsolationLevel(opts.Isolation) != sql.LevelDefault {
-		return nil, errors.New("pgdriver: custom IsolationLevel is not supported")
+	var command string
+	switch isolation {
+	case sql.LevelDefault:
+		command = "BEGIN"
+	case sql.LevelReadUncommitted, sql.LevelReadCommitted, sql.LevelRepeatableRead, sql.LevelSerializable:
+		command = fmt.Sprintf("BEGIN; SET TRANSACTION ISOLATION LEVEL %s", isolation.String())
+	default:
+		return nil, fmt.Errorf("pgdriver: unsupported transaction isolation: %s", isolation.String())
 	}
+
 	if opts.ReadOnly {
-		return nil, errors.New("pgdriver: ReadOnly transactions are not supported")
+		command = fmt.Sprintf("%s READ ONLY", command)
 	}
 
-	if _, err := cn.ExecContext(ctx, "BEGIN", nil); err != nil {
+	if _, err := cn.ExecContext(ctx, command, nil); err != nil {
 		return nil, err
 	}
 	return tx{cn: cn}, nil
@@ -325,6 +335,18 @@ func (cn *Conn) IsValid() bool {
 	return !cn.isClosed()
 }
 
+var _ driver.SessionResetter = (*Conn)(nil)
+
+func (cn *Conn) ResetSession(ctx context.Context) error {
+	if cn.isClosed() {
+		return driver.ErrBadConn
+	}
+	if cn.cfg.ResetSessionFunc != nil {
+		return cn.cfg.ResetSessionFunc(ctx, cn)
+	}
+	return nil
+}
+
 func (cn *Conn) checkBadConn(err error) error {
 	if isBadConn(err, false) {
 		// Close and return driver.ErrBadConn next time the conn is used.
@@ -333,6 +355,8 @@ func (cn *Conn) checkBadConn(err error) error {
 	// Always return the original error.
 	return err
 }
+
+func (cn *Conn) Conn() net.Conn { return cn.netConn }
 
 //------------------------------------------------------------------------------
 
@@ -368,7 +392,9 @@ func (r *rows) Close() error {
 
 	for {
 		switch err := r.Next(nil); err {
-		case nil, io.EOF:
+		case nil:
+			// keep going
+		case io.EOF:
 			return nil
 		default: // unexpected error
 			_ = r.cn.Close()
@@ -456,7 +482,7 @@ func (r *rows) readDataRow(rd *reader, dest []driver.Value) error {
 		return err
 	}
 
-	if len(dest) != int(numCol) {
+	if dest != nil && len(dest) != int(numCol) {
 		return fmt.Errorf("pgdriver: query returned %d columns, but Scan dest has %d items",
 			numCol, len(dest))
 	}

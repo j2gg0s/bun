@@ -13,6 +13,7 @@ import (
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dbfixture"
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
 )
 
@@ -31,6 +32,8 @@ func TestORM(t *testing.T) {
 		{testRelationExcludeAll},
 		{testM2MRelationExcludeColumn},
 		{testRelationBelongsToSelf},
+		{testCompositeHasMany},
+		{testCompositeM2M},
 	}
 
 	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
@@ -55,7 +58,9 @@ func testBookRelations(t *testing.T, db *bun.DB) {
 		Relation("Author.Avatar").
 		Relation("Editor").
 		Relation("Editor.Avatar").
-		Relation("Genres").
+		Relation("Genres", func(q *bun.SelectQuery) *bun.SelectQuery {
+			return q.Column("id", "name", "genre__rating")
+		}).
 		Relation("Comments").
 		Relation("Translations", func(q *bun.SelectQuery) *bun.SelectQuery {
 			return q.Order("id")
@@ -127,6 +132,7 @@ func testAuthorRelations(t *testing.T, db *bun.DB) {
 		Relation("Books.Translations", func(q *bun.SelectQuery) *bun.SelectQuery {
 			return q.OrderExpr("tr.id ASC")
 		}).
+		OrderExpr("author.id ASC").
 		Limit(1).
 		Scan(ctx)
 	require.NoError(t, err)
@@ -239,12 +245,10 @@ func testBulkUpdate(t *testing.T, db *bun.DB) {
 		Model((*Book)(nil)).
 		Table("_data").
 		Apply(func(q *bun.UpdateQuery) *bun.UpdateQuery {
-			return q.Set(
-				"? = UPPER(book.title)",
-				q.FQN("title"),
-			)
+			return q.
+				SetColumn("title", "UPPER(?)", q.FQN("title")).
+				Where("? = _data.id", q.FQN("id"))
 		}).
-		Where("book.id = _data.id").
 		Exec(ctx)
 	require.NoError(t, err)
 
@@ -348,19 +352,18 @@ func testRelationBelongsToSelf(t *testing.T, db *bun.DB) {
 	type Model struct {
 		bun.BaseModel `bun:"alias:m"`
 
-		ID      int64
+		ID      int64 `bun:",pk,autoincrement"`
 		ModelID int64
 		Model   *Model `bun:"rel:belongs-to"`
 	}
 
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
 	models := []Model{
 		{ID: 1},
 		{ID: 2, ModelID: 1},
 	}
-	_, err = db.NewInsert().Model(&models).Exec(ctx)
+	_, err := db.NewInsert().Model(&models).Exec(ctx)
 	require.NoError(t, err)
 
 	models = nil
@@ -374,13 +377,14 @@ func testRelationBelongsToSelf(t *testing.T, db *bun.DB) {
 
 func testM2MRelationExcludeColumn(t *testing.T, db *bun.DB) {
 	type Item struct {
-		ID        int64
+		ID        int64     `bun:",pk,autoincrement"`
 		CreatedAt time.Time `bun:",notnull,nullzero"`
 		UpdatedAt time.Time `bun:",notnull,nullzero"`
 	}
 
 	type Order struct {
-		ID    int64
+		ID    int64 `bun:",pk,autoincrement"`
+		Text  string
 		Items []Item `bun:"m2m:order_to_items"`
 	}
 
@@ -393,15 +397,13 @@ func testM2MRelationExcludeColumn(t *testing.T, db *bun.DB) {
 	}
 
 	db.RegisterModel((*OrderToItem)(nil))
-
-	err := db.ResetModel(ctx, (*Order)(nil), (*Item)(nil), (*OrderToItem)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Order)(nil), (*Item)(nil), (*OrderToItem)(nil))
 
 	items := []Item{
 		{ID: 1, CreatedAt: time.Unix(1, 0), UpdatedAt: time.Unix(1, 0)},
 		{ID: 2, CreatedAt: time.Unix(2, 0), UpdatedAt: time.Unix(1, 0)},
 	}
-	_, err = db.NewInsert().Model(&items).Exec(ctx)
+	_, err := db.NewInsert().Model(&items).Exec(ctx)
 	require.NoError(t, err)
 
 	orders := []Order{
@@ -429,8 +431,96 @@ func testM2MRelationExcludeColumn(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 }
 
+func testCompositeHasMany(t *testing.T, db *bun.DB) {
+	department := new(Department)
+	err := db.NewSelect().
+		Model(department).
+		Where("company_no=? AND no=?", "company one", "hr").
+		Relation("Employees").
+		Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "hr", department.No)
+	require.Equal(t, 2, len(department.Employees))
+}
+
+func testCompositeM2M(t *testing.T, db *bun.DB) {
+	if db.Dialect().Name() == dialect.MSSQL {
+		t.Skip()
+	}
+
+	type Item struct {
+		ID     int64 `bun:",pk"`
+		ShopID int64 `bun:",pk"`
+	}
+
+	type Order struct {
+		ID     int64  `bun:",pk"`
+		ShopID int64  `bun:",pk"`
+		Items  []Item `bun:"m2m:orders_to_items,join:Order=Item"`
+	}
+
+	type OrderToItem struct {
+		bun.BaseModel `bun:"table:orders_to_items"`
+
+		ShopID int64 `bun:""`
+
+		OrderID int64  `bun:""`
+		Order   *Order `bun:"rel:belongs-to,join:shop_id=shop_id,join:order_id=id"`
+		ItemID  int64  `bun:""`
+		Item    *Item  `bun:"rel:belongs-to,join:shop_id=shop_id,join:item_id=id"`
+	}
+
+	db.RegisterModel((*OrderToItem)(nil))
+	mustResetModel(t, ctx, db, (*Order)(nil), (*Item)(nil), (*OrderToItem)(nil))
+
+	items := []Item{
+		{ID: 1, ShopID: 22},
+		{ID: 2, ShopID: 22},
+		{ID: 3, ShopID: 22},
+	}
+	_, err := db.NewInsert().Model(&items).Exec(ctx)
+	require.NoError(t, err)
+
+	orders := []Order{
+		{ID: 12, ShopID: 22},
+		{ID: 13, ShopID: 22},
+	}
+	_, err = db.NewInsert().Model(&orders).Exec(ctx)
+	require.NoError(t, err)
+
+	orderItems := []OrderToItem{
+		{OrderID: 12, ItemID: 1, ShopID: 22},
+		{OrderID: 12, ItemID: 2, ShopID: 22},
+		{OrderID: 13, ItemID: 3, ShopID: 22},
+	}
+	_, err = db.NewInsert().Model(&orderItems).Exec(ctx)
+	require.NoError(t, err)
+
+	var ordersOut []Order
+
+	err = db.NewSelect().
+		Model(&ordersOut).
+		Where("id = ?", 12).
+		Relation("Items").
+		Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(ordersOut))
+	require.Equal(t, 2, len(ordersOut[0].Items))
+
+	var ordersOut2 []Order
+
+	err = db.NewSelect().
+		Model(&ordersOut2).
+		Where("id = ?", 13).
+		Relation("Items").
+		Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(ordersOut2))
+	require.Equal(t, 1, len(ordersOut2[0].Items))
+}
+
 type Genre struct {
-	ID     int
+	ID     int `bun:",pk"`
 	Name   string
 	Rating int `bun:",scanonly"`
 
@@ -445,12 +535,12 @@ func (g Genre) String() string {
 }
 
 type Image struct {
-	ID   int
+	ID   int `bun:",pk"`
 	Path string
 }
 
 type Author struct {
-	ID    int
+	ID    int     `bun:",pk"`
 	Name  string  `bun:",unique"`
 	Books []*Book `bun:"rel:has-many"`
 
@@ -460,6 +550,12 @@ type Author struct {
 
 func (a Author) String() string {
 	return fmt.Sprintf("Author<ID=%d Name=%q>", a.ID, a.Name)
+}
+
+var _ bun.BeforeAppendModelHook = (*Author)(nil)
+
+func (*Author) BeforeAppendModel(ctx context.Context, query bun.Query) error {
+	return nil
 }
 
 type BookGenre struct {
@@ -474,7 +570,7 @@ type BookGenre struct {
 }
 
 type Book struct {
-	ID        int
+	ID        int `bun:",pk"`
 	Title     string
 	AuthorID  int
 	Author    Author `bun:"rel:belongs-to"`
@@ -485,18 +581,24 @@ type Book struct {
 
 	Genres       []Genre       `bun:"m2m:book_genres"` // many to many relation
 	Translations []Translation `bun:"rel:has-many"`
-	Comments     []Comment     `bun:"rel:has-many,join:\"id=trackable_id,type=trackable_type\",polymorphic"`
+	Comments     []Comment     `bun:"rel:has-many,join:id=trackable_id,join:type=trackable_type,polymorphic"`
 }
 
 func (b Book) String() string {
 	return fmt.Sprintf("Book<Id=%d Title=%q>", b.ID, b.Title)
 }
 
+var _ bun.BeforeAppendModelHook = (*Book)(nil)
+
+func (*Book) BeforeAppendModel(ctx context.Context, query bun.Query) error {
+	return nil
+}
+
 // BookWithCommentCount is like Book model, but has additional CommentCount
-// field that is used to select data into it. The use of `bun:",inherit"` tag
-// is essential here so it inherits internal model properties such as table name.
+// field that is used to select data into it. The use of `bun:",extend"` tag
+// is essential here.
 type BookWithCommentCount struct {
-	Book `bun:",inherit"`
+	Book `bun:",extend"`
 
 	CommentCount int
 }
@@ -504,18 +606,32 @@ type BookWithCommentCount struct {
 type Translation struct {
 	bun.BaseModel `bun:"alias:tr"`
 
-	ID     int
+	ID     int    `bun:",pk"`
 	BookID int    `bun:"unique:book_id_lang"`
 	Book   *Book  `bun:"rel:belongs-to"`
 	Lang   string `bun:"unique:book_id_lang"`
 
-	Comments []Comment `bun:"rel:has-many,join:\"id=trackable_id,type=trackable_type\",polymorphic"`
+	Comments []Comment `bun:"rel:has-many,join:id=trackable_id,join:type=trackable_type,polymorphic"`
 }
 
 type Comment struct {
 	TrackableID   int    // Book.ID or Translation.ID
 	TrackableType string // "book" or "translation"
 	Text          string
+}
+
+type Department struct {
+	bun.BaseModel `bun:"alias:d"`
+	CompanyNo     string     `bun:",pk"`
+	No            string     `bun:",pk"`
+	Employees     []Employee `bun:"rel:has-many,join:company_no=company_no,join:no=department_no"`
+}
+
+type Employee struct {
+	bun.BaseModel `bun:"alias:p"`
+	CompanyNo     string `bun:",pk"`
+	DepartmentNo  string `bun:",pk"`
+	Name          string `bun:",pk"`
 }
 
 func createTestSchema(t *testing.T, db *bun.DB) {
@@ -529,13 +645,11 @@ func createTestSchema(t *testing.T, db *bun.DB) {
 		(*BookGenre)(nil),
 		(*Translation)(nil),
 		(*Comment)(nil),
+		(*Department)(nil),
+		(*Employee)(nil),
 	}
 	for _, model := range models {
-		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
-		require.NoError(t, err)
-
-		_, err = db.NewCreateTable().Model(model).Exec(ctx)
-		require.NoError(t, err)
+		mustResetModel(t, ctx, db, model)
 	}
 }
 

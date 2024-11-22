@@ -11,28 +11,21 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/global"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.20.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/schema"
-)
-
-var (
-	tracer = otel.Tracer("github.com/uptrace/bun")
-	meter  = metric.Must(global.Meter("github.com/uptrace/bun"))
-
-	queryHistogram = meter.NewInt64Histogram(
-		"go.sql.query_timing",
-		metric.WithDescription("Timing of processed queries"),
-		metric.WithUnit("milliseconds"),
-	)
+	"github.com/uptrace/opentelemetry-go-extra/otelsql"
 )
 
 type QueryHook struct {
-	attrs []attribute.KeyValue
+	attrs          []attribute.KeyValue
+	formatQueries  bool
+	tracer         trace.Tracer
+	meter          metric.Meter
+	queryHistogram metric.Int64Histogram
 }
 
 var _ bun.QueryHook = (*QueryHook)(nil)
@@ -42,6 +35,17 @@ func NewQueryHook(opts ...Option) *QueryHook {
 	for _, opt := range opts {
 		opt(h)
 	}
+	if h.tracer == nil {
+		h.tracer = otel.Tracer("github.com/uptrace/bun")
+	}
+	if h.meter == nil {
+		h.meter = otel.Meter("github.com/uptrace/bun")
+	}
+	h.queryHistogram, _ = h.meter.Int64Histogram(
+		"go.sql.query_timing",
+		metric.WithDescription("Timing of processed queries"),
+		metric.WithUnit("milliseconds"),
+	)
 	return h
 }
 
@@ -52,11 +56,11 @@ func (h *QueryHook) Init(db *bun.DB) {
 		labels = append(labels, sys)
 	}
 
-	reportDBStats(db.DB, labels)
+	otelsql.ReportDBStatsMetrics(db.DB, otelsql.WithAttributes(labels...))
 }
 
 func (h *QueryHook) BeforeQuery(ctx context.Context, event *bun.QueryEvent) context.Context {
-	ctx, _ = tracer.Start(ctx, "")
+	ctx, _ = h.tracer.Start(ctx, "", trace.WithSpanKind(trace.SpanKindClient))
 	return ctx
 }
 
@@ -64,7 +68,8 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	operation := event.Operation()
 	dbOperation := semconv.DBOperationKey.String(operation)
 
-	labels := make([]attribute.KeyValue, 0, 2)
+	labels := make([]attribute.KeyValue, 0, len(h.attrs)+2)
+	labels = append(labels, h.attrs...)
 	labels = append(labels, dbOperation)
 	if event.IQuery != nil {
 		if tableName := event.IQuery.GetTableName(); tableName != "" {
@@ -72,7 +77,8 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 		}
 	}
 
-	queryHistogram.Record(ctx, time.Since(event.StartTime).Milliseconds(), labels...)
+	dur := time.Since(event.StartTime)
+	h.queryHistogram.Record(ctx, dur.Milliseconds(), metric.WithAttributes(labels...))
 
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
@@ -82,10 +88,11 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	span.SetName(operation)
 	defer span.End()
 
-	query := eventQuery(event)
+	query := h.eventQuery(event)
 	fn, file, line := funcFileLine("github.com/uptrace/bun")
 
 	attrs := make([]attribute.KeyValue, 0, 10)
+	attrs = append(attrs, h.attrs...)
 	attrs = append(attrs,
 		dbOperation,
 		semconv.DBStatementKey.String(query),
@@ -104,7 +111,7 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	}
 
 	switch event.Err {
-	case nil, sql.ErrNoRows:
+	case nil, sql.ErrNoRows, sql.ErrTxDone:
 		// ignore
 	default:
 		span.RecordError(event.Err)
@@ -140,16 +147,16 @@ func funcFileLine(pkg string) (string, string, int) {
 	return fn, file, line
 }
 
-func eventQuery(event *bun.QueryEvent) string {
+func (h *QueryHook) eventQuery(event *bun.QueryEvent) string {
 	const softQueryLimit = 8000
 	const hardQueryLimit = 16000
 
 	var query string
 
-	if len(event.Query) > softQueryLimit {
-		query = unformattedQuery(event)
-	} else {
+	if h.formatQueries && len(event.Query) <= softQueryLimit {
 		query = event.Query
+	} else {
+		query = unformattedQuery(event)
 	}
 
 	if len(query) > hardQueryLimit {
@@ -160,10 +167,12 @@ func eventQuery(event *bun.QueryEvent) string {
 }
 
 func unformattedQuery(event *bun.QueryEvent) string {
-	if b, err := event.QueryAppender.AppendQuery(schema.NewNopFormatter(), nil); err == nil {
-		return bytesToString(b)
+	if event.IQuery != nil {
+		if b, err := event.IQuery.AppendQuery(schema.NewNopFormatter(), nil); err == nil {
+			return bytesToString(b)
+		}
 	}
-	return string(event.Query)
+	return string(event.QueryTemplate)
 }
 
 func dbSystem(db *bun.DB) attribute.KeyValue {
@@ -174,66 +183,9 @@ func dbSystem(db *bun.DB) attribute.KeyValue {
 		return semconv.DBSystemMySQL
 	case dialect.SQLite:
 		return semconv.DBSystemSqlite
+	case dialect.MSSQL:
+		return semconv.DBSystemMSSQL
 	default:
 		return attribute.KeyValue{}
 	}
-}
-
-func reportDBStats(db *sql.DB, labels []attribute.KeyValue) {
-	var maxOpenConns metric.Int64GaugeObserver
-	var openConns metric.Int64GaugeObserver
-	var inUseConns metric.Int64GaugeObserver
-	var idleConns metric.Int64GaugeObserver
-	var connsWaitCount metric.Int64CounterObserver
-	var connsWaitDuration metric.Int64CounterObserver
-	var connsClosedMaxIdle metric.Int64CounterObserver
-	var connsClosedMaxIdleTime metric.Int64CounterObserver
-	var connsClosedMaxLifetime metric.Int64CounterObserver
-
-	batch := meter.NewBatchObserver(func(ctx context.Context, result metric.BatchObserverResult) {
-		stats := db.Stats()
-
-		result.Observe(labels,
-			maxOpenConns.Observation(int64(stats.MaxOpenConnections)),
-
-			openConns.Observation(int64(stats.OpenConnections)),
-			inUseConns.Observation(int64(stats.InUse)),
-			idleConns.Observation(int64(stats.Idle)),
-
-			connsWaitCount.Observation(stats.WaitCount),
-			connsWaitDuration.Observation(int64(stats.WaitDuration)),
-			connsClosedMaxIdle.Observation(stats.MaxIdleClosed),
-			connsClosedMaxIdleTime.Observation(stats.MaxIdleTimeClosed),
-			connsClosedMaxLifetime.Observation(stats.MaxLifetimeClosed),
-		)
-	})
-
-	maxOpenConns = batch.NewInt64GaugeObserver("go.sql.connections_max_open",
-		metric.WithDescription("Maximum number of open connections to the database"),
-	)
-	openConns = batch.NewInt64GaugeObserver("go.sql.connections_open",
-		metric.WithDescription("The number of established connections both in use and idle"),
-	)
-	inUseConns = batch.NewInt64GaugeObserver("go.sql.connections_in_use",
-		metric.WithDescription("The number of connections currently in use"),
-	)
-	idleConns = batch.NewInt64GaugeObserver("go.sql.connections_idle",
-		metric.WithDescription("The number of idle connections"),
-	)
-	connsWaitCount = batch.NewInt64CounterObserver("go.sql.connections_wait_count",
-		metric.WithDescription("The total number of connections waited for"),
-	)
-	connsWaitDuration = batch.NewInt64CounterObserver("go.sql.connections_wait_duration",
-		metric.WithDescription("The total time blocked waiting for a new connection"),
-		metric.WithUnit("nanoseconds"),
-	)
-	connsClosedMaxIdle = batch.NewInt64CounterObserver("go.sql.connections_closed_max_idle",
-		metric.WithDescription("The total number of connections closed due to SetMaxIdleConns"),
-	)
-	connsClosedMaxIdleTime = batch.NewInt64CounterObserver("go.sql.connections_closed_max_idle_time",
-		metric.WithDescription("The total number of connections closed due to SetConnMaxIdleTime"),
-	)
-	connsClosedMaxLifetime = batch.NewInt64CounterObserver("go.sql.connections_closed_max_lifetime",
-		metric.WithDescription("The total number of connections closed due to SetConnMaxLifetime"),
-	)
 }

@@ -1,6 +1,7 @@
 name: Go
 
 on:
+  workflow_dispatch:
   push:
     branches: [master]
   pull_request:
@@ -13,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.16.x, 1.17.x]
+        go-version: [1.23.x]
 
     services:
       postgres:
@@ -47,7 +48,7 @@ jobs:
           - 53306:3306
         options: >-
           --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s
-          --health-retries=3
+          --health-retries=5
       mariadb:
         image: mariadb:10.6
         env:
@@ -59,7 +60,20 @@ jobs:
           - 13306:3306
         options: >-
           --health-cmd="mariadb-admin ping" --health-interval=10s --health-timeout=5s
-          --health-retries=3
+          --health-retries=5
+      mssql2019:
+        image: ghcr.io/uptrace/mssql:latest
+        env:
+          ACCEPT_EULA: Y
+          MYSQL_SA_PASSWORD: passWORD1
+          MSSQL_DB: test
+          MSSQL_USER: sa
+          MSSQL_PASSWORD: passWORD1
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd="/opt/mssql-tools/bin/sqlcmd -S tcp:localhost,1433 -U sa -P passWORD1 -Q
+          'select 1' -b -o /dev/null" --health-interval=10s --health-timeout=5s --health-retries=5
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -68,7 +82,7 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Test
         run: make test
@@ -77,3 +91,4 @@ jobs:
           MYSQL: user:pass@/test
           MYSQL5: user:pass@tcp(localhost:53306)/test
           MARIADB: user:pass@tcp(localhost:13306)/test
+          MSSQL2019: sqlserver://sa:passWORD1@localhost:1433?database=master

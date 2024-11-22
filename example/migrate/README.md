@@ -3,13 +3,37 @@
 To run migrations:
 
 ```shell
-go run main.go db migrate
+BUNDEBUG=2 go run . db migrate
+```
+
+To rollback migrations:
+
+```shell
+go run . db rollback
+```
+
+To view status of migrations:
+
+```shell
+go run . db status
+```
+
+To create a Go migration:
+
+```shell
+go run . db create_go go_migration_name
+```
+
+To create a SQL migration:
+
+```shell
+go run . db create_sql sql_migration_name
 ```
 
 To get help:
 
 ```shell
-go run main.go db
+go run . db
 
 NAME:
    bun db - database commands

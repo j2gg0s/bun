@@ -3,6 +3,7 @@ package bun
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/uptrace/bun/dialect/feature"
@@ -12,8 +13,11 @@ import (
 
 type DeleteQuery struct {
 	whereBaseQuery
+	orderLimitOffsetQuery
 	returningQuery
 }
+
+var _ Query = (*DeleteQuery)(nil)
 
 func NewDeleteQuery(db *DB) *DeleteQuery {
 	q := &DeleteQuery{
@@ -33,17 +37,32 @@ func (q *DeleteQuery) Conn(db IConn) *DeleteQuery {
 }
 
 func (q *DeleteQuery) Model(model interface{}) *DeleteQuery {
-	q.setTableModel(model)
+	q.setModel(model)
 	return q
 }
 
-// Apply calls the fn passing the DeleteQuery as an argument.
-func (q *DeleteQuery) Apply(fn func(*DeleteQuery) *DeleteQuery) *DeleteQuery {
-	return fn(q)
+func (q *DeleteQuery) Err(err error) *DeleteQuery {
+	q.setErr(err)
+	return q
+}
+
+// Apply calls each function in fns, passing the DeleteQuery as an argument.
+func (q *DeleteQuery) Apply(fns ...func(*DeleteQuery) *DeleteQuery) *DeleteQuery {
+	for _, fn := range fns {
+		if fn != nil {
+			q = fn(q)
+		}
+	}
+	return q
 }
 
 func (q *DeleteQuery) With(name string, query schema.QueryAppender) *DeleteQuery {
-	q.addWith(name, query)
+	q.addWith(name, query, false)
+	return q
+}
+
+func (q *DeleteQuery) WithRecursive(name string, query schema.QueryAppender) *DeleteQuery {
+	q.addWith(name, query, true)
 	return q
 }
 
@@ -60,7 +79,7 @@ func (q *DeleteQuery) TableExpr(query string, args ...interface{}) *DeleteQuery 
 }
 
 func (q *DeleteQuery) ModelTableExpr(query string, args ...interface{}) *DeleteQuery {
-	q.modelTable = schema.SafeQuery(query, args)
+	q.modelTableName = schema.SafeQuery(query, args)
 	return q
 }
 
@@ -105,8 +124,36 @@ func (q *DeleteQuery) WhereAllWithDeleted() *DeleteQuery {
 	return q
 }
 
+func (q *DeleteQuery) Order(orders ...string) *DeleteQuery {
+	if !q.hasFeature(feature.DeleteOrderLimit) {
+		q.err = errors.New("bun: order is not supported for current dialect")
+		return q
+	}
+	q.addOrder(orders...)
+	return q
+}
+
+func (q *DeleteQuery) OrderExpr(query string, args ...interface{}) *DeleteQuery {
+	if !q.hasFeature(feature.DeleteOrderLimit) {
+		q.err = errors.New("bun: order is not supported for current dialect")
+		return q
+	}
+	q.addOrderExpr(query, args...)
+	return q
+}
+
 func (q *DeleteQuery) ForceDelete() *DeleteQuery {
 	q.flags = q.flags.Set(forceDeleteFlag)
+	return q
+}
+
+// ------------------------------------------------------------------------------
+func (q *DeleteQuery) Limit(n int) *DeleteQuery {
+	if !q.hasFeature(feature.DeleteOrderLimit) {
+		q.err = errors.New("bun: limit is not supported for current dialect")
+		return q
+	}
+	q.setLimit(n)
 	return q
 }
 
@@ -116,15 +163,13 @@ func (q *DeleteQuery) ForceDelete() *DeleteQuery {
 //
 // To suppress the auto-generated RETURNING clause, use `Returning("NULL")`.
 func (q *DeleteQuery) Returning(query string, args ...interface{}) *DeleteQuery {
+	if !q.hasFeature(feature.DeleteReturning) {
+		q.err = errors.New("bun: returning is not supported for current dialect")
+		return q
+	}
+
 	q.addReturning(schema.SafeQuery(query, args))
 	return q
-}
-
-func (q *DeleteQuery) hasReturning() bool {
-	if !q.db.features.Has(feature.Returning) {
-		return false
-	}
-	return q.returningQuery.hasReturning()
 }
 
 //------------------------------------------------------------------------------
@@ -134,6 +179,10 @@ func (q *DeleteQuery) Operation() string {
 }
 
 func (q *DeleteQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []byte, err error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+
 	fmter = formatterWithModel(fmter, q)
 
 	if q.isSoftDelete() {
@@ -152,7 +201,6 @@ func (q *DeleteQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []byte, e
 		return upd.AppendQuery(fmter, b)
 	}
 
-	q = q.WhereDeleted()
 	withAlias := q.db.features.Has(feature.DeleteTableAlias)
 
 	b, err = q.appendWith(fmter, b)
@@ -179,12 +227,35 @@ func (q *DeleteQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []byte, e
 		}
 	}
 
+	if q.hasFeature(feature.Output) && q.hasReturning() {
+		b = append(b, " OUTPUT "...)
+		b, err = q.appendOutput(fmter, b)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	b, err = q.mustAppendWhere(fmter, b, withAlias)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(q.returning) > 0 {
+	if q.hasMultiTables() && (len(q.order) > 0 || q.limit > 0) {
+		return nil, errors.New("bun: can't use ORDER or LIMIT with multiple tables")
+	}
+
+	b, err = q.appendOrder(fmter, b)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err = q.appendLimitOffset(fmter, b)
+	if err != nil {
+		return nil, err
+	}
+
+	if q.hasFeature(feature.DeleteReturning) && q.hasReturning() {
+		b = append(b, " RETURNING "...)
 		b, err = q.appendReturning(fmter, b)
 		if err != nil {
 			return nil, err
@@ -212,7 +283,18 @@ func (q *DeleteQuery) softDeleteSet(fmter schema.Formatter, tm time.Time) string
 
 //------------------------------------------------------------------------------
 
+func (q *DeleteQuery) Scan(ctx context.Context, dest ...interface{}) error {
+	_, err := q.scanOrExec(ctx, dest, true)
+	return err
+}
+
 func (q *DeleteQuery) Exec(ctx context.Context, dest ...interface{}) (sql.Result, error) {
+	return q.scanOrExec(ctx, dest, len(dest) > 0)
+}
+
+func (q *DeleteQuery) scanOrExec(
+	ctx context.Context, dest []interface{}, hasDest bool,
+) (sql.Result, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
@@ -223,25 +305,33 @@ func (q *DeleteQuery) Exec(ctx context.Context, dest ...interface{}) (sql.Result
 		}
 	}
 
+	// Run append model hooks before generating the query.
 	if err := q.beforeAppendModel(ctx, q); err != nil {
 		return nil, err
 	}
 
+	// Generate the query before checking hasReturning.
 	queryBytes, err := q.AppendQuery(q.db.fmter, q.db.makeQueryBytes())
 	if err != nil {
 		return nil, err
+	}
+
+	useScan := hasDest || (q.hasReturning() && q.hasFeature(feature.DeleteReturning|feature.Output))
+	var model Model
+
+	if useScan {
+		var err error
+		model, err = q.getModel(dest)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	query := internal.String(queryBytes)
 
 	var res sql.Result
 
-	if hasDest := len(dest) > 0; hasDest || q.hasReturning() {
-		model, err := q.getModel(dest)
-		if err != nil {
-			return nil, err
-		}
-
+	if useScan {
 		res, err = q.scan(ctx, q, query, model, hasDest)
 		if err != nil {
 			return nil, err
@@ -278,4 +368,65 @@ func (q *DeleteQuery) afterDeleteHook(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (q *DeleteQuery) String() string {
+	buf, err := q.AppendQuery(q.db.Formatter(), nil)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(buf)
+}
+
+//------------------------------------------------------------------------------
+
+func (q *DeleteQuery) QueryBuilder() QueryBuilder {
+	return &deleteQueryBuilder{q}
+}
+
+func (q *DeleteQuery) ApplyQueryBuilder(fn func(QueryBuilder) QueryBuilder) *DeleteQuery {
+	return fn(q.QueryBuilder()).Unwrap().(*DeleteQuery)
+}
+
+type deleteQueryBuilder struct {
+	*DeleteQuery
+}
+
+func (q *deleteQueryBuilder) WhereGroup(
+	sep string, fn func(QueryBuilder) QueryBuilder,
+) QueryBuilder {
+	q.DeleteQuery = q.DeleteQuery.WhereGroup(sep, func(qs *DeleteQuery) *DeleteQuery {
+		return fn(q).(*deleteQueryBuilder).DeleteQuery
+	})
+	return q
+}
+
+func (q *deleteQueryBuilder) Where(query string, args ...interface{}) QueryBuilder {
+	q.DeleteQuery.Where(query, args...)
+	return q
+}
+
+func (q *deleteQueryBuilder) WhereOr(query string, args ...interface{}) QueryBuilder {
+	q.DeleteQuery.WhereOr(query, args...)
+	return q
+}
+
+func (q *deleteQueryBuilder) WhereDeleted() QueryBuilder {
+	q.DeleteQuery.WhereDeleted()
+	return q
+}
+
+func (q *deleteQueryBuilder) WhereAllWithDeleted() QueryBuilder {
+	q.DeleteQuery.WhereAllWithDeleted()
+	return q
+}
+
+func (q *deleteQueryBuilder) WherePK(cols ...string) QueryBuilder {
+	q.DeleteQuery.WherePK(cols...)
+	return q
+}
+
+func (q *deleteQueryBuilder) Unwrap() interface{} {
+	return q.DeleteQuery
 }

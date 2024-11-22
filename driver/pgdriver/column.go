@@ -51,7 +51,7 @@ func readColumnValue(rd *reader, dataType int32, dataLen int) (interface{}, erro
 	case pgTimestamptz:
 		return readTimeCol(rd, dataLen)
 	case pgDate:
-		// Return a string and let the scanner to convert string to time.Time if necessary.
+		// Return a string and let the scanner convert the string to time.Time if necessary.
 		return readStringCol(rd, dataLen)
 	case pgText, pgVarchar:
 		return readStringCol(rd, dataLen)
@@ -146,7 +146,7 @@ func readTimeCol(rd *reader, n int) (interface{}, error) {
 		return time.Time{}, err
 	}
 
-	tm, err := parseTime(bytesToString(tmp))
+	tm, err := ParseTime(bytesToString(tmp))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -162,7 +162,7 @@ const (
 	timestamptzFormat3 = "2006-01-02 15:04:05.999999999-07"
 )
 
-func parseTime(s string) (time.Time, error) {
+func ParseTime(s string) (time.Time, error) {
 	switch l := len(s); {
 	case l < len("15:04:05"):
 		return time.Time{}, fmt.Errorf("pgdriver: can't parse time=%q", s)

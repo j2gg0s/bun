@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/uptrace/bun/internal"
 	"github.com/uptrace/bun/schema"
 )
 
@@ -33,7 +34,7 @@ func newSliceTableModel(
 
 		slice:    slice,
 		sliceLen: slice.Len(),
-		nextElem: makeSliceNextElemFunc(slice),
+		nextElem: internal.MakeSliceNextElemFunc(slice),
 	}
 	m.init(slice.Type())
 	return m
@@ -48,15 +49,6 @@ func (m *sliceTableModel) init(sliceType reflect.Type) {
 
 func (m *sliceTableModel) join(name string) *relationJoin {
 	return m._join(m.slice, name)
-}
-
-func (m *sliceTableModel) SetCap(cap int) {
-	if cap > 100 {
-		cap = 100
-	}
-	if m.slice.Cap() == 0 {
-		m.slice.Set(reflect.MakeSlice(m.slice.Type(), 0, cap))
-	}
 }
 
 func (m *sliceTableModel) ScanRows(ctx context.Context, rows *sql.Rows) (int, error) {
@@ -76,6 +68,9 @@ func (m *sliceTableModel) ScanRows(ctx context.Context, rows *sql.Rows) (int, er
 
 	for rows.Next() {
 		m.strct = m.nextElem()
+		if m.sliceOfPtr {
+			m.strct = m.strct.Elem()
+		}
 		m.structInited = false
 
 		if err := m.scanRow(ctx, rows, dest); err != nil {
@@ -94,7 +89,7 @@ func (m *sliceTableModel) ScanRows(ctx context.Context, rows *sql.Rows) (int, er
 var _ schema.BeforeAppendModelHook = (*sliceTableModel)(nil)
 
 func (m *sliceTableModel) BeforeAppendModel(ctx context.Context, query Query) error {
-	if !m.table.HasBeforeAppendModelHook() {
+	if !m.table.HasBeforeAppendModelHook() || !m.slice.IsValid() {
 		return nil
 	}
 

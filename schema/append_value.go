@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/sqltype"
 	"github.com/uptrace/bun/extra/bunjson"
@@ -51,30 +51,42 @@ var appenders = []AppenderFunc{
 	reflect.UnsafePointer: nil,
 }
 
-var appenderMap sync.Map
+var appenderCache = xsync.NewMapOf[reflect.Type, AppenderFunc]()
 
 func FieldAppender(dialect Dialect, field *Field) AppenderFunc {
 	if field.Tag.HasOption("msgpack") {
 		return appendMsgpack
 	}
 
+	fieldType := field.StructField.Type
+
 	switch strings.ToUpper(field.UserSQLType) {
 	case sqltype.JSON, sqltype.JSONB:
+		if fieldType.Implements(driverValuerType) {
+			return appendDriverValue
+		}
+
+		if fieldType.Kind() != reflect.Ptr {
+			if reflect.PointerTo(fieldType).Implements(driverValuerType) {
+				return addrAppender(appendDriverValue)
+			}
+		}
+
 		return AppendJSONValue
 	}
 
-	return Appender(dialect, field.StructField.Type)
+	return Appender(dialect, fieldType)
 }
 
 func Appender(dialect Dialect, typ reflect.Type) AppenderFunc {
-	if v, ok := appenderMap.Load(typ); ok {
-		return v.(AppenderFunc)
+	if v, ok := appenderCache.Load(typ); ok {
+		return v
 	}
 
 	fn := appender(dialect, typ)
 
-	if v, ok := appenderMap.LoadOrStore(typ, fn); ok {
-		return v.(AppenderFunc)
+	if v, ok := appenderCache.LoadOrStore(typ, fn); ok {
+		return v
 	}
 	return fn
 }
@@ -85,25 +97,33 @@ func appender(dialect Dialect, typ reflect.Type) AppenderFunc {
 		return appendBytesValue
 	case timeType:
 		return appendTimeValue
-	case ipType:
-		return appendIPValue
+	case timePtrType:
+		return PtrAppender(appendTimeValue)
 	case ipNetType:
 		return appendIPNetValue
+	case ipType, netipPrefixType, netipAddrType:
+		return appendStringer
 	case jsonRawMessageType:
 		return appendJSONRawMessageValue
 	}
 
+	kind := typ.Kind()
+
 	if typ.Implements(queryAppenderType) {
+		if kind == reflect.Ptr {
+			return nilAwareAppender(appendQueryAppenderValue)
+		}
 		return appendQueryAppenderValue
 	}
 	if typ.Implements(driverValuerType) {
+		if kind == reflect.Ptr {
+			return nilAwareAppender(appendDriverValue)
+		}
 		return appendDriverValue
 	}
 
-	kind := typ.Kind()
-
 	if kind != reflect.Ptr {
-		ptr := reflect.PtrTo(typ)
+		ptr := reflect.PointerTo(typ)
 		if ptr.Implements(queryAppenderType) {
 			return addrAppender(appendQueryAppenderValue)
 		}
@@ -116,6 +136,9 @@ func appender(dialect Dialect, typ reflect.Type) AppenderFunc {
 	case reflect.Interface:
 		return ifaceAppenderFunc
 	case reflect.Ptr:
+		if typ.Implements(jsonMarshalerType) {
+			return nilAwareAppender(AppendJSONValue)
+		}
 		if fn := Appender(dialect, typ.Elem()); fn != nil {
 			return PtrAppender(fn)
 		}
@@ -141,6 +164,15 @@ func ifaceAppenderFunc(fmter Formatter, b []byte, v reflect.Value) []byte {
 	return appender(fmter, b, elem)
 }
 
+func nilAwareAppender(fn AppenderFunc) AppenderFunc {
+	return func(fmter Formatter, b []byte, v reflect.Value) []byte {
+		if v.IsNil() {
+			return dialect.AppendNull(b)
+		}
+		return fn(fmter, b, v)
+	}
+}
+
 func PtrAppender(fn AppenderFunc) AppenderFunc {
 	return func(fmter Formatter, b []byte, v reflect.Value) []byte {
 		if v.IsNil() {
@@ -151,7 +183,7 @@ func PtrAppender(fn AppenderFunc) AppenderFunc {
 }
 
 func AppendBoolValue(fmter Formatter, b []byte, v reflect.Value) []byte {
-	return dialect.AppendBool(b, v.Bool())
+	return fmter.Dialect().AppendBool(b, v.Bool())
 }
 
 func AppendIntValue(fmter Formatter, b []byte, v reflect.Value) []byte {
@@ -194,7 +226,7 @@ func appendArrayBytesValue(fmter Formatter, b []byte, v reflect.Value) []byte {
 }
 
 func AppendStringValue(fmter Formatter, b []byte, v reflect.Value) []byte {
-	return dialect.AppendString(b, v.String())
+	return fmter.Dialect().AppendString(b, v.String())
 }
 
 func AppendJSONValue(fmter Formatter, b []byte, v reflect.Value) []byte {
@@ -215,14 +247,13 @@ func appendTimeValue(fmter Formatter, b []byte, v reflect.Value) []byte {
 	return fmter.Dialect().AppendTime(b, tm)
 }
 
-func appendIPValue(fmter Formatter, b []byte, v reflect.Value) []byte {
-	ip := v.Interface().(net.IP)
-	return dialect.AppendString(b, ip.String())
-}
-
 func appendIPNetValue(fmter Formatter, b []byte, v reflect.Value) []byte {
 	ipnet := v.Interface().(net.IPNet)
-	return dialect.AppendString(b, ipnet.String())
+	return fmter.Dialect().AppendString(b, ipnet.String())
+}
+
+func appendStringer(fmter Formatter, b []byte, v reflect.Value) []byte {
+	return fmter.Dialect().AppendString(b, v.Interface().(fmt.Stringer).String())
 }
 
 func appendJSONRawMessageValue(fmter Formatter, b []byte, v reflect.Value) []byte {
@@ -230,7 +261,7 @@ func appendJSONRawMessageValue(fmter Formatter, b []byte, v reflect.Value) []byt
 	if bytes == nil {
 		return dialect.AppendNull(b)
 	}
-	return dialect.AppendString(b, internal.String(bytes))
+	return fmter.Dialect().AppendString(b, internal.String(bytes))
 }
 
 func appendQueryAppenderValue(fmter Formatter, b []byte, v reflect.Value) []byte {
@@ -241,6 +272,9 @@ func appendDriverValue(fmter Formatter, b []byte, v reflect.Value) []byte {
 	value, err := v.Interface().(driver.Valuer).Value()
 	if err != nil {
 		return dialect.AppendError(b, err)
+	}
+	if _, ok := value.(driver.Valuer); ok {
+		return dialect.AppendError(b, fmt.Errorf("driver.Valuer returns unsupported type %T", value))
 	}
 	return Append(fmter, b, value)
 }

@@ -15,6 +15,8 @@ type DropTableQuery struct {
 	ifExists bool
 }
 
+var _ Query = (*DropTableQuery)(nil)
+
 func NewDropTableQuery(db *DB) *DropTableQuery {
 	q := &DropTableQuery{
 		baseQuery: baseQuery{
@@ -31,7 +33,12 @@ func (q *DropTableQuery) Conn(db IConn) *DropTableQuery {
 }
 
 func (q *DropTableQuery) Model(model interface{}) *DropTableQuery {
-	q.setTableModel(model)
+	q.setModel(model)
+	return q
+}
+
+func (q *DropTableQuery) Err(err error) *DropTableQuery {
+	q.setErr(err)
 	return q
 }
 
@@ -50,7 +57,7 @@ func (q *DropTableQuery) TableExpr(query string, args ...interface{}) *DropTable
 }
 
 func (q *DropTableQuery) ModelTableExpr(query string, args ...interface{}) *DropTableQuery {
-	q.modelTable = schema.SafeQuery(query, args)
+	q.modelTableName = schema.SafeQuery(query, args)
 	return q
 }
 
@@ -58,6 +65,11 @@ func (q *DropTableQuery) ModelTableExpr(query string, args ...interface{}) *Drop
 
 func (q *DropTableQuery) IfExists() *DropTableQuery {
 	q.ifExists = true
+	return q
+}
+
+func (q *DropTableQuery) Cascade() *DropTableQuery {
+	q.cascade = true
 	return q
 }
 
@@ -138,4 +150,13 @@ func (q *DropTableQuery) afterDropTableHook(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (q *DropTableQuery) String() string {
+	buf, err := q.AppendQuery(q.db.Formatter(), nil)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(buf)
 }

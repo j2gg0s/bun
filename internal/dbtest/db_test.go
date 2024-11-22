@@ -3,6 +3,7 @@ package dbtest_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,17 +12,21 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
+	"github.com/uptrace/bun/dialect/mssqldialect"
 	"github.com/uptrace/bun/dialect/mysqldialect"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/driver/sqliteshim"
 	"github.com/uptrace/bun/extra/bundebug"
+	"github.com/uptrace/bun/schema"
 
+	_ "github.com/denisenkom/go-mssqldb"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/stretchr/testify/require"
@@ -30,21 +35,30 @@ import (
 var ctx = context.TODO()
 
 const (
-	pgName      = "pg"
-	pgxName     = "pgx"
-	mysql5Name  = "mysql5"
-	mysql8Name  = "mysql8"
-	mariadbName = "mariadb"
-	sqliteName  = "sqlite"
+	pgName        = "pg"
+	pgxName       = "pgx"
+	mysql5Name    = "mysql5"
+	mysql8Name    = "mysql8"
+	mariadbName   = "mariadb"
+	sqliteName    = "sqlite"
+	mssql2019Name = "mssql2019"
 )
 
 var allDBs = map[string]func(tb testing.TB) *bun.DB{
-	pgName:      pg,
-	pgxName:     pgx,
-	mysql5Name:  mysql5,
-	mysql8Name:  mysql8,
-	mariadbName: mariadb,
-	sqliteName:  sqlite,
+	pgName:        pg,
+	pgxName:       pgx,
+	mysql5Name:    mysql5,
+	mysql8Name:    mysql8,
+	mariadbName:   mariadb,
+	sqliteName:    sqlite,
+	mssql2019Name: mssql2019,
+}
+
+var allDialects = []func() schema.Dialect{
+	func() schema.Dialect { return pgdialect.New() },
+	func() schema.Dialect { return mysqldialect.New() },
+	func() schema.Dialect { return sqlitedialect.New() },
+	func() schema.Dialect { return mssqldialect.New() },
 }
 
 func pg(tb testing.TB) *bun.DB {
@@ -61,7 +75,7 @@ func pg(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, pgdialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=pg>", db.String())
@@ -84,7 +98,7 @@ func pgx(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, pgdialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=pg>", db.String())
@@ -107,7 +121,7 @@ func mysql8(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -130,7 +144,7 @@ func mysql5(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -139,7 +153,7 @@ func mysql5(tb testing.TB) *bun.DB {
 }
 
 func mariadb(tb testing.TB) *bun.DB {
-	dsn := os.Getenv("MYSQL5")
+	dsn := os.Getenv("MARIADB")
 	if dsn == "" {
 		dsn = "user:pass@tcp(localhost:13306)/test"
 	}
@@ -153,7 +167,7 @@ func mariadb(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -171,10 +185,33 @@ func sqlite(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, sqlitedialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=sqlite>", db.String())
+
+	return db
+}
+
+func mssql2019(tb testing.TB) *bun.DB {
+	dsn := os.Getenv("MSSQL2019")
+	if dsn == "" {
+		dsn = "sqlserver://sa:passWORD1@localhost:14339?database=test"
+	}
+
+	sqldb, err := sql.Open("sqlserver", dsn)
+	require.NoError(tb, err)
+	tb.Cleanup(func() {
+		require.NoError(tb, sqldb.Close())
+	})
+
+	db := bun.NewDB(sqldb, mssqldialect.New())
+	db.AddQueryHook(bundebug.NewQueryHook(
+		bundebug.WithEnabled(false),
+		bundebug.FromEnv(),
+	))
+
+	require.Equal(tb, "DB<dialect=mssql>", db.String())
 
 	return db
 }
@@ -183,6 +220,17 @@ func testEachDB(t *testing.T, f func(t *testing.T, dbName string, db *bun.DB)) {
 	for dbName, newDB := range allDBs {
 		t.Run(dbName, func(t *testing.T) {
 			f(t, dbName, newDB(t))
+		})
+	}
+}
+
+// testEachDialect allows testing dialect-specific functionality that does not require database interactions.
+func testEachDialect(t *testing.T, f func(t *testing.T, dialectName string, dialect schema.Dialect)) {
+	for _, newDialect := range allDialects {
+		d := newDialect()
+		name := d.Name().String()
+		t.Run(name, func(t *testing.T) {
+			f(t, name, d)
 		})
 	}
 }
@@ -222,9 +270,15 @@ func TestDB(t *testing.T) {
 		{testScanSingleRowByRow},
 		{testScanRows},
 		{testRunInTx},
-		{testInsertIface},
+		{testJSONInterface},
+		{testJSONValuer},
 		{testSelectBool},
+		{testRawQuery},
 		{testFKViolation},
+		{testWithForeignKeysAndRules},
+		{testWithForeignKeys},
+		{testWithForeignKeysHasMany},
+		{testWithPointerForeignKeysHasMany},
 		{testInterfaceAny},
 		{testInterfaceJSON},
 		{testScanRawMessage},
@@ -234,6 +288,16 @@ func TestDB(t *testing.T) {
 		{testModelNonPointer},
 		{testBinaryData},
 		{testUpsert},
+		{testMultiUpdate},
+		{testUpdateWithSkipupdateTag},
+		{testScanAndCount},
+		{testEmbedModelValue},
+		{testEmbedModelPointer},
+		{testJSONMarshaler},
+		{testNilDriverValue},
+		{testRunInTxAndSavepoint},
+		{testDriverValuerReturnsItself},
+		{testNoPanicWhenReturningNullColumns},
 	}
 
 	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
@@ -262,15 +326,17 @@ func testSelectScan(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 	require.Equal(t, 10, num)
 
-	err = db.NewSelect().TableExpr("(SELECT 10) AS t").Where("FALSE").Scan(ctx, &num)
+	err = db.NewSelect().
+		ColumnExpr("t.num").
+		TableExpr("(SELECT 10 AS num) AS t").
+		Where("1 = 2").
+		Scan(ctx, &num)
 	require.Equal(t, sql.ErrNoRows, err)
 
-	var flag bool
-	err = db.NewSelect().
-		ColumnExpr("EXISTS (?)", db.NewSelect().ColumnExpr("1")).
-		Scan(ctx, &flag)
+	var str string
+	err = db.NewSelect().ColumnExpr("?", "\\\"'hello\n%_").Scan(ctx, &str)
 	require.NoError(t, err)
-	require.Equal(t, true, flag)
+	require.Equal(t, "\\\"'hello\n%_", str)
 }
 
 func testSelectCount(t *testing.T, db *bun.DB) {
@@ -357,7 +423,7 @@ func testSelectStruct(t *testing.T, db *bun.DB) {
 	require.Equal(t, 10, model.Num)
 	require.Equal(t, "hello", model.Str)
 
-	err = db.NewSelect().TableExpr("(SELECT 42) AS t").Where("FALSE").Scan(ctx, model)
+	err = db.NewSelect().TableExpr("(SELECT 42 AS num) AS t").Where("1 = 2").Scan(ctx, model)
 	require.Equal(t, sql.ErrNoRows, err)
 
 	err = db.NewSelect().ColumnExpr("1 as unknown_column").Scan(ctx, model)
@@ -633,16 +699,15 @@ func testRunInTx(t *testing.T, db *bun.DB) {
 		Count int64
 	}
 
-	err := db.ResetModel(ctx, (*Counter)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Counter)(nil))
 
-	_, err = db.NewInsert().Model(&Counter{Count: 0}).Exec(ctx)
+	_, err := db.NewInsert().Model(&Counter{Count: 0}).Exec(ctx)
 	require.NoError(t, err)
 
 	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		_, err := tx.NewUpdate().Model((*Counter)(nil)).
 			Set("count = count + 1").
-			Where("TRUE").
+			Where("1 = 1").
 			Exec(ctx)
 		return err
 	})
@@ -671,21 +736,20 @@ func testRunInTx(t *testing.T, db *bun.DB) {
 
 func testJSONSpecialChars(t *testing.T, db *bun.DB) {
 	type Model struct {
-		ID    int
+		ID    int                    `bun:",pk,autoincrement"`
 		Attrs map[string]interface{} `bun:"type:json"`
 	}
 
 	ctx := context.Background()
 
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
 	model := &Model{
 		Attrs: map[string]interface{}{
 			"hello": "\000world\nworld\u0000",
 		},
 	}
-	_, err = db.NewInsert().Model(model).Exec(ctx)
+	_, err := db.NewInsert().Model(model).Exec(ctx)
 	require.NoError(t, err)
 
 	model = new(Model)
@@ -703,19 +767,18 @@ func testJSONSpecialChars(t *testing.T, db *bun.DB) {
 	}
 }
 
-func testInsertIface(t *testing.T, db *bun.DB) {
+func testJSONInterface(t *testing.T, db *bun.DB) {
 	type Model struct {
-		ID    int
+		ID    int         `bun:",pk,autoincrement"`
 		Value interface{} `bun:"type:json"`
 	}
 
 	ctx := context.Background()
 
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
 	model := new(Model)
-	_, err = db.NewInsert().Model(model).Exec(ctx)
+	_, err := db.NewInsert().Model(model).Exec(ctx)
 	require.NoError(t, err)
 
 	model = &Model{
@@ -723,6 +786,48 @@ func testInsertIface(t *testing.T, db *bun.DB) {
 	}
 	_, err = db.NewInsert().Model(model).Exec(ctx)
 	require.NoError(t, err)
+}
+
+type JSONValue struct {
+	str string
+}
+
+var _ driver.Valuer = (*JSONValue)(nil)
+
+func (v *JSONValue) Scan(src interface{}) error {
+	switch src := src.(type) {
+	case []byte:
+		v.str = string(src)
+	case string:
+		v.str = src
+	default:
+		panic("not reached")
+	}
+	return nil
+}
+
+func (v *JSONValue) Value() (driver.Value, error) {
+	return `"driver.Value"`, nil
+}
+
+func testJSONValuer(t *testing.T, db *bun.DB) {
+	type Model struct {
+		ID    int       `bun:",pk,autoincrement"`
+		Value JSONValue `bun:"type:json"`
+	}
+
+	ctx := context.Background()
+
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	model := new(Model)
+	_, err := db.NewInsert().Model(model).Exec(ctx)
+	require.NoError(t, err)
+
+	model2 := new(Model)
+	err = db.NewSelect().Model(model2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, `"driver.Value"`, model2.Value.str)
 }
 
 func testSelectBool(t *testing.T, db *bun.DB) {
@@ -736,14 +841,37 @@ func testSelectBool(t *testing.T, db *bun.DB) {
 	require.False(t, flag)
 }
 
+func testRawQuery(t *testing.T, db *bun.DB) {
+	var num int
+	err := db.NewRaw("SELECT ?", 123).Scan(ctx, &num)
+
+	require.NoError(t, err)
+	require.Equal(t, 123, num)
+
+	_ = db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		var num int
+		err := db.NewRaw("SELECT ?", 456).Scan(ctx, &num)
+		require.NoError(t, err)
+		require.Equal(t, 456, num)
+		return nil
+	})
+
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+
+	err = conn.NewRaw("SELECT ?", 789).Scan(ctx, &num)
+	require.NoError(t, err)
+	require.Equal(t, 789, num)
+}
+
 func testFKViolation(t *testing.T, db *bun.DB) {
 	type Deck struct {
-		ID     int
+		ID     int `bun:",pk,autoincrement"`
 		UserID int
 	}
 
 	type User struct {
-		ID int
+		ID int `bun:",pk,autoincrement"`
 	}
 
 	if db.Dialect().Name() == dialect.SQLite {
@@ -756,24 +884,20 @@ func testFKViolation(t *testing.T, db *bun.DB) {
 		require.NoError(t, err)
 	}
 
+	mustResetModel(t, ctx, db, (*User)(nil))
 	_, err := db.NewCreateTable().
-		Model((*User)(nil)).
-		IfNotExists().
-		Exec(ctx)
-	require.NoError(t, err)
-
-	_, err = db.NewCreateTable().
 		Model((*Deck)(nil)).
 		IfNotExists().
 		ForeignKey("(user_id) REFERENCES users (id) ON DELETE CASCADE").
 		Exec(ctx)
 	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
 
 	// Empty deck should violate FK constraint.
 	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
 	require.Error(t, err)
 
-	// Create a deck that violates the user_id FK contraint
+	// Create a deck that violates the user_id FK constraint
 	deck := &Deck{UserID: 42}
 
 	_, err = db.NewInsert().Model(deck).Exec(ctx)
@@ -786,6 +910,266 @@ func testFKViolation(t *testing.T, db *bun.DB) {
 	n, err := db.NewSelect().Model((*Deck)(nil)).Count(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
+}
+
+func testWithForeignKeysAndRules(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID   int    `bun:",pk"`
+		Type string `bun:",pk"`
+		Name string
+	}
+	type Deck struct {
+		ID       int `bun:",pk"`
+		UserID   int
+		UserType string
+		User     *User `bun:"rel:belongs-to,join:user_id=id,join:user_type=type,on_update:cascade,on_delete:set null"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	// Empty deck should violate FK constraint.
+	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
+	require.Error(t, err)
+
+	// Create a deck that violates the user_id FK constraint
+	deck := &Deck{UserID: 42}
+
+	_, err = db.NewInsert().Model(deck).Exec(ctx)
+	require.Error(t, err)
+
+	decks := []*Deck{deck}
+	_, err = db.NewInsert().Model(&decks).Exec(ctx)
+	require.Error(t, err)
+
+	n, err := db.NewSelect().Model((*Deck)(nil)).Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	_, err = db.NewInsert().Model(&User{ID: 1, Type: "admin", Name: "root"}).Exec(ctx)
+	require.NoError(t, err)
+	res, err := db.NewInsert().Model(&Deck{UserID: 1, UserType: "admin"}).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), affected)
+
+	// Update User ID and check for FK update
+	res, err = db.NewUpdate().Model(&User{}).Where("id = ?", 1).Where("type = ?", "admin").Set("id = ?", 2).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err = res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), affected)
+
+	n, err = db.NewSelect().Model(&Deck{}).Where("user_id = 1").Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	n, err = db.NewSelect().Model(&Deck{}).Where("user_id = 2").Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// Delete user and check for FK delete
+	_, err = db.NewDelete().Model(&User{}).Where("id = ?", 2).Exec(ctx)
+	require.NoError(t, err)
+
+	n, err = db.NewSelect().Model(&Deck{}).Where("user_id = 2").Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func testWithForeignKeys(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID   int    `bun:",pk,autoincrement"`
+		Type string `bun:",pk"`
+		Name string
+	}
+	type Deck struct {
+		ID       int `bun:",pk,autoincrement"`
+		UserID   int
+		UserType string
+		User     *User `bun:"rel:belongs-to,join:user_id=id,join:user_type=type"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	// Empty deck should violate FK constraint.
+	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
+	require.Error(t, err)
+
+	// Create a deck that violates the user_id FK constraint
+	deck := &Deck{UserID: 42}
+
+	_, err = db.NewInsert().Model(deck).Exec(ctx)
+	require.Error(t, err)
+
+	decks := []*Deck{deck}
+	_, err = db.NewInsert().Model(&decks).Exec(ctx)
+	require.Error(t, err)
+
+	n, err := db.NewSelect().Model((*Deck)(nil)).Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+
+	_, err = db.NewInsert().Model(&User{ID: 1, Type: "admin", Name: "root"}).Exec(ctx)
+	require.NoError(t, err)
+	res, err := db.NewInsert().Model(&Deck{UserID: 1, UserType: "admin"}).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), affected)
+
+	// Select with Relation should work
+	d := Deck{}
+	err = db.NewSelect().Model(&d).Relation("User").Scan(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, d.User)
+	require.Equal(t, d.User.Name, "root")
+}
+
+func testWithForeignKeysHasMany(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID     int `bun:",pk"`
+		DeckID int
+		Name   string
+	}
+	type Deck struct {
+		ID    int     `bun:",pk"`
+		Users []*User `bun:"rel:has-many,join:id=deck_id"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	deckID := 1
+	deck := Deck{ID: deckID}
+	_, err = db.NewInsert().Model(&deck).Exec(ctx)
+	require.NoError(t, err)
+
+	userID1 := 1
+	userID2 := 2
+	users := []*User{
+		{ID: userID1, DeckID: deckID, Name: "user 1"},
+		{ID: userID2, DeckID: deckID, Name: "user 2"},
+	}
+
+	res, err := db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), affected)
+
+	err = db.NewSelect().Model(&deck).Relation("Users").Scan(ctx)
+	require.NoError(t, err)
+	require.Len(t, deck.Users, 2)
+}
+
+func testWithPointerForeignKeysHasMany(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID     *int `bun:",pk"`
+		DeckID *int
+		Name   string
+	}
+	type Deck struct {
+		ID    *int    `bun:",pk"`
+		Users []*User `bun:"rel:has-many,join:id=deck_id"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	deckID := 1
+	deck := Deck{ID: &deckID}
+	_, err = db.NewInsert().Model(&deck).Exec(ctx)
+	require.NoError(t, err)
+
+	userID1 := 1
+	userID2 := 2
+	users := []*User{
+		{ID: &userID1, DeckID: &deckID, Name: "user 1"},
+		{ID: &userID2, DeckID: &deckID, Name: "user 2"},
+	}
+
+	res, err := db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), affected)
+
+	err = db.NewSelect().Model(&deck).Relation("Users").Scan(ctx)
+	require.NoError(t, err)
+	require.Len(t, deck.Users, 2)
 }
 
 func testInterfaceAny(t *testing.T, db *bun.DB) {
@@ -832,20 +1216,19 @@ func testInterfaceJSON(t *testing.T, db *bun.DB) {
 
 func testScanRawMessage(t *testing.T, db *bun.DB) {
 	type Model struct {
-		ID    int64
+		ID    int64 `bun:",pk,autoincrement"`
 		Value json.RawMessage
 	}
 
 	ctx := context.Background()
 
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
 	models := []Model{
 		{Value: json.RawMessage(`"hello"`)},
 		{Value: json.RawMessage(`"world"`)},
 	}
-	_, err = db.NewInsert().Model(&models).Exec(ctx)
+	_, err := db.NewInsert().Model(&models).Exec(ctx)
 	require.NoError(t, err)
 
 	var models1 []Model
@@ -868,8 +1251,7 @@ func testPointers(t *testing.T, db *bun.DB) {
 	ctx := context.Background()
 
 	for _, id := range []int64{-1, 0, 1} {
-		err := db.ResetModel(ctx, (*Model)(nil))
-		require.NoError(t, err)
+		mustResetModel(t, ctx, db, (*Model)(nil))
 
 		var model Model
 		if id >= 0 {
@@ -879,7 +1261,7 @@ func testPointers(t *testing.T, db *bun.DB) {
 
 		}
 
-		_, err = db.NewInsert().Model(&model).Exec(ctx)
+		_, err := db.NewInsert().Model(&model).Exec(ctx)
 		require.NoError(t, err)
 
 		var model2 Model
@@ -895,7 +1277,7 @@ func testExists(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 	require.True(t, exists)
 
-	exists, err = db.NewSelect().ColumnExpr("1").Where("1 = 0").Exists(ctx)
+	exists, err = db.NewSelect().ColumnExpr("1").Where("1 = 2").Exists(ctx)
 	require.NoError(t, err)
 	require.False(t, exists)
 }
@@ -919,16 +1301,14 @@ func testModelNonPointer(t *testing.T, db *bun.DB) {
 
 func testBinaryData(t *testing.T, db *bun.DB) {
 	type Model struct {
-		ID   int64
+		ID   int64 `bun:",pk,autoincrement"`
 		Data []byte
 	}
 
 	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
-
-	_, err = db.NewInsert().Model(&Model{Data: []byte("hello")}).Exec(ctx)
+	_, err := db.NewInsert().Model(&Model{Data: []byte("hello")}).Exec(ctx)
 	require.NoError(t, err)
 
 	var model Model
@@ -938,19 +1318,21 @@ func testBinaryData(t *testing.T, db *bun.DB) {
 }
 
 func testUpsert(t *testing.T, db *bun.DB) {
+	if db.Dialect().Name() == dialect.MSSQL {
+		t.Skip("mssql")
+	}
+
 	type Model struct {
-		ID  int64
+		ID  int64 `bun:",pk,autoincrement"`
 		Str string
 	}
 
 	ctx := context.Background()
-
-	err := db.ResetModel(ctx, (*Model)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Model)(nil))
 
 	model := &Model{ID: 1, Str: "hello"}
 
-	_, err = db.NewInsert().Model(model).Exec(ctx)
+	_, err := db.NewInsert().Model(model).Exec(ctx)
 	require.NoError(t, err)
 
 	model.Str = "world"
@@ -967,4 +1349,444 @@ func testUpsert(t *testing.T, db *bun.DB) {
 	err = db.NewSelect().Model(model).WherePK().Scan(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "world", model.Str)
+}
+
+func testMultiUpdate(t *testing.T, db *bun.DB) {
+	if !db.Dialect().Features().Has(feature.CTE) {
+		t.Skip()
+		return
+	}
+
+	type Model struct {
+		ID  int64 `bun:",pk,autoincrement"`
+		Str string
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	model := &Model{ID: 1, Str: "hello"}
+
+	_, err := db.NewInsert().Model(model).Exec(ctx)
+	require.NoError(t, err)
+
+	selq := db.NewSelect().Model(new(Model))
+
+	_, err = db.NewUpdate().
+		With("src", selq).
+		TableExpr("models").
+		Table("src").
+		Set("? = src.str", db.UpdateFQN("models", "str")).
+		Where("models.id = src.id").
+		Exec(ctx)
+	require.NoError(t, err)
+}
+
+func testUpdateWithSkipupdateTag(t *testing.T, db *bun.DB) {
+	type Model struct {
+		ID        int64 `bun:",pk,autoincrement"`
+		Name      string
+		CreatedAt time.Time `bun:",skipupdate"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	createdAt := time.Now().Truncate(time.Minute).UTC()
+
+	model := &Model{ID: 1, Name: "foo", CreatedAt: createdAt}
+
+	_, err := db.NewInsert().Model(model).Exec(ctx)
+	require.NoError(t, err)
+	require.NotZero(t, model.CreatedAt)
+
+	//
+	// update field with tag "skipupdate"
+	//
+	model.CreatedAt = model.CreatedAt.Add(2 * time.Minute)
+	_, err = db.NewUpdate().Model(model).WherePK().Exec(ctx)
+	require.NoError(t, err)
+
+	//
+	// check
+	//
+	model_ := new(Model)
+	model_.ID = model.ID
+	err = db.NewSelect().Model(model_).WherePK().Scan(ctx)
+	require.NoError(t, err, "select")
+	require.NotEmpty(t, model_)
+	require.Equal(t, model.ID, model_.ID)
+	require.Equal(t, model.Name, model_.Name)
+	require.Equal(t, createdAt.UTC(), model_.CreatedAt.UTC())
+
+	require.NotEqual(t, model.CreatedAt.UTC(), model_.CreatedAt.UTC())
+}
+
+func testScanAndCount(t *testing.T, db *bun.DB) {
+	type Model struct {
+		ID  int64 `bun:",pk,autoincrement"`
+		Str string
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	t.Run("tx", func(t *testing.T) {
+		for i := 0; i < 100; i++ {
+			err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				var models []Model
+				count, err := tx.NewSelect().Model(&models).ScanAndCount(ctx)
+				require.NoError(t, err)
+				require.Equal(t, 0, count)
+				return err
+			})
+			require.NoError(t, err)
+		}
+	})
+
+	t.Run("no limit", func(t *testing.T) {
+		src := []Model{
+			{Str: "str1"},
+			{Str: "str2"},
+		}
+		_, err := db.NewInsert().Model(&src).Exec(ctx)
+		require.NoError(t, err)
+
+		var dest []Model
+		count, err := db.NewSelect().Model(&dest).ScanAndCount(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, count)
+		require.Equal(t, 2, len(dest))
+	})
+}
+
+func testEmbedModelValue(t *testing.T, db *bun.DB) {
+	type DoubleEmbed struct {
+		A string
+		B string
+	}
+	type Embed struct {
+		Foo string
+		Bar string
+		C   DoubleEmbed `bun:"embed:c_"`
+		D   DoubleEmbed `bun:"embed:d_"`
+	}
+	type Model struct {
+		X Embed `bun:"embed:x_"`
+		Y Embed `bun:"embed:y_"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	m1 := &Model{
+		X: Embed{
+			Foo: "x.foo",
+			Bar: "x.bar",
+			C: DoubleEmbed{
+				A: "x.c.a",
+				B: "x.c.b",
+			},
+			D: DoubleEmbed{
+				A: "x.d.a",
+				B: "x.d.b",
+			},
+		},
+		Y: Embed{
+			Foo: "y.foo",
+			Bar: "y.bar",
+			C: DoubleEmbed{
+				A: "y.c.a",
+				B: "y.c.b",
+			},
+			D: DoubleEmbed{
+				A: "y.d.a",
+				B: "y.d.b",
+			},
+		},
+	}
+	_, err := db.NewInsert().Model(m1).Exec(ctx)
+	require.NoError(t, err)
+
+	var m2 Model
+	err = db.NewSelect().Model(&m2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, *m1, m2)
+}
+
+func testEmbedModelPointer(t *testing.T, db *bun.DB) {
+	type DoubleEmbed struct {
+		A string
+		B string
+	}
+	type Embed struct {
+		Foo string
+		Bar string
+		C   *DoubleEmbed `bun:"embed:c_"`
+		D   *DoubleEmbed `bun:"embed:d_"`
+	}
+	type Model struct {
+		X *Embed `bun:"embed:x_"`
+		Y *Embed `bun:"embed:y_"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	m1 := &Model{
+		X: &Embed{
+			Foo: "x.foo",
+			Bar: "x.bar",
+			C: &DoubleEmbed{
+				A: "x.c.a",
+				B: "x.c.b",
+			},
+			D: &DoubleEmbed{
+				A: "x.d.a",
+				B: "x.d.b",
+			},
+		},
+		Y: &Embed{
+			Foo: "y.foo",
+			Bar: "y.bar",
+			C: &DoubleEmbed{
+				A: "y.c.a",
+				B: "y.c.b",
+			},
+			D: &DoubleEmbed{
+				A: "y.d.a",
+				B: "y.d.b",
+			},
+		},
+	}
+	_, err := db.NewInsert().Model(m1).Exec(ctx)
+	require.NoError(t, err)
+
+	var m2 Model
+	err = db.NewSelect().Model(&m2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, *m1, m2)
+}
+
+func testEmbedTypeField(t *testing.T, db *bun.DB) {
+	type Embed string
+	type Model struct {
+		Embed
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	m1 := &Model{
+		Embed: Embed("foo"),
+	}
+	_, err := db.NewInsert().Model(m1).Exec(ctx)
+	require.NoError(t, err)
+
+	var m2 Model
+	err = db.NewSelect().Model(&m2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, *m1, m2)
+}
+
+type JSONField struct {
+	Foo string `json:"foo"`
+}
+
+func (f *JSONField) MarshalJSON() ([]byte, error) {
+	return []byte(`{"foo": "bar"}`), nil
+}
+
+func testJSONMarshaler(t *testing.T, db *bun.DB) {
+	type Model struct {
+		Field *JSONField
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	m1 := &Model{Field: new(JSONField)}
+	_, err := db.NewInsert().Model(m1).Exec(ctx)
+	require.NoError(t, err)
+
+	var m2 Model
+	err = db.NewSelect().Model(&m2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "bar", m2.Field.Foo)
+}
+
+type DriverValue struct {
+	s string
+}
+
+var _ driver.Valuer = (*DriverValue)(nil)
+
+func (v *DriverValue) Value() (driver.Value, error) {
+	return v.s, nil
+}
+
+func testNilDriverValue(t *testing.T, db *bun.DB) {
+	type Model struct {
+		Value *DriverValue `bun:"type:varchar(100)"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	_, err := db.NewInsert().Model(&Model{}).Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = db.NewInsert().Model(&Model{Value: &DriverValue{s: "hello"}}).Exec(ctx)
+	require.NoError(t, err)
+}
+
+func testRunInTxAndSavepoint(t *testing.T, db *bun.DB) {
+	type Counter struct {
+		Count int64
+	}
+
+	mustResetModel(t, ctx, db, (*Counter)(nil))
+
+	_, err := db.NewInsert().Model(&Counter{Count: 0}).Exec(ctx)
+	require.NoError(t, err)
+
+	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		err := tx.RunInTx(ctx, nil, func(ctx context.Context, sp bun.Tx) error {
+			_, err := sp.NewUpdate().Model((*Counter)(nil)).
+				Set("count = count + 1").
+				Where("1 = 1").
+				Exec(ctx)
+			return err
+		})
+		require.NoError(t, err)
+		// rolling back the transaction should rollback what happened inside savepoint
+		return errors.New("fake error")
+	})
+	require.Error(t, err)
+
+	var count int
+	err = db.NewSelect().Model((*Counter)(nil)).Scan(ctx, &count)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+
+	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		err := tx.RunInTx(ctx, nil, func(ctx context.Context, sp bun.Tx) error {
+			_, err := sp.NewInsert().Model(&Counter{Count: 1}).
+				Exec(ctx)
+			require.NoError(t, err)
+			return err
+		})
+		require.NoError(t, err)
+
+		// ignored on purpose this error
+		// rolling back a savepoint should not affect the transaction
+		// nor other savepoints on the same level
+		_ = tx.RunInTx(ctx, nil, func(ctx context.Context, sp bun.Tx) error {
+			_, err := sp.NewInsert().Model(&Counter{Count: 2}).
+				Exec(ctx)
+			require.NoError(t, err)
+			return errors.New("fake error")
+		})
+
+		return err
+	})
+	require.NoError(t, err)
+
+	count, err = db.NewSelect().Model((*Counter)(nil)).Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	err = db.ResetModel(ctx, (*Counter)(nil))
+	require.NoError(t, err)
+
+	// happy path, commit transaction, savepoints and sub-savepoints
+	err = db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.NewInsert().Model(&Counter{Count: 1}).
+			Exec(ctx)
+		require.NoError(t, err)
+
+		err = tx.RunInTx(ctx, nil, func(ctx context.Context, sp bun.Tx) error {
+			_, err := sp.NewInsert().Model(&Counter{Count: 1}).
+				Exec(ctx)
+			if err != nil {
+				return err
+			}
+
+			return sp.RunInTx(ctx, nil, func(ctx context.Context, subSp bun.Tx) error {
+				_, err := subSp.NewInsert().Model(&Counter{Count: 1}).
+					Exec(ctx)
+				return err
+			})
+		})
+		require.NoError(t, err)
+
+		err = tx.RunInTx(ctx, nil, func(ctx context.Context, sp bun.Tx) error {
+			_, err := sp.NewInsert().Model(&Counter{Count: 2}).
+				Exec(ctx)
+			return err
+		})
+
+		return err
+	})
+	require.NoError(t, err)
+
+	count, err = db.NewSelect().Model((*Counter)(nil)).Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 4, count)
+}
+
+type anotherString string
+
+var _ driver.Valuer = (*anotherString)(nil)
+
+func (v anotherString) Value() (driver.Value, error) {
+	return v, nil
+}
+
+func testDriverValuerReturnsItself(t *testing.T, db *bun.DB) {
+	expectedValue := anotherString("example value")
+
+	type Model struct {
+		ID    int           `bun:",pk,autoincrement"`
+		Value anotherString `bun:"value"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	model := &Model{Value: expectedValue}
+	_, err := db.NewInsert().Model(model).Exec(ctx)
+	require.Error(t, err)
+}
+
+func testNoPanicWhenReturningNullColumns(t *testing.T, db *bun.DB) {
+	type Model struct {
+		Value     string  `bun:"value,notnull"`
+		NullValue *string `bun:"null_value"`
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	modelSlice := []*Model{{Value: "boom"}}
+
+	require.NotPanics(t, func() {
+		db.NewInsert().Model(&modelSlice).Exec(ctx)
+	})
+}
+
+func mustResetModel(tb testing.TB, ctx context.Context, db *bun.DB, models ...interface{}) {
+	err := db.ResetModel(ctx, models...)
+	require.NoError(tb, err, "must reset model")
+	mustDropTableOnCleanup(tb, ctx, db, models...)
+}
+
+func mustDropTableOnCleanup(tb testing.TB, ctx context.Context, db *bun.DB, models ...interface{}) {
+	tb.Cleanup(func() {
+		for _, model := range models {
+			drop := db.NewDropTable().IfExists().Cascade().Model(model)
+			_, err := drop.Exec(ctx)
+			require.NoError(tb, err, "must drop table: %q", drop.GetTableName())
+		}
+	})
 }

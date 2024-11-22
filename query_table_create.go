@@ -1,11 +1,15 @@
 package bun
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
+	"github.com/uptrace/bun/dialect"
 	"github.com/uptrace/bun/dialect/feature"
 	"github.com/uptrace/bun/dialect/sqltype"
 	"github.com/uptrace/bun/internal"
@@ -17,12 +21,20 @@ type CreateTableQuery struct {
 
 	temp        bool
 	ifNotExists bool
-	varchar     int
+	fksFromRel  bool // Create foreign keys captured in table's relations.
+
+	// varchar changes the default length for VARCHAR columns.
+	// Because some dialects require that length is always specified for VARCHAR type,
+	// we will use the exact user-defined type if length is set explicitly, as in `bun:",type:varchar(5)"`,
+	// but assume the new default length when it's omitted, e.g. `bun:",type:varchar"`.
+	varchar int
 
 	fks         []schema.QueryWithArgs
 	partitionBy schema.QueryWithArgs
 	tablespace  schema.QueryWithArgs
 }
+
+var _ Query = (*CreateTableQuery)(nil)
 
 func NewCreateTableQuery(db *DB) *CreateTableQuery {
 	q := &CreateTableQuery{
@@ -30,6 +42,7 @@ func NewCreateTableQuery(db *DB) *CreateTableQuery {
 			db:   db,
 			conn: db.DB,
 		},
+		varchar: db.Dialect().DefaultVarcharLen(),
 	}
 	return q
 }
@@ -40,7 +53,12 @@ func (q *CreateTableQuery) Conn(db IConn) *CreateTableQuery {
 }
 
 func (q *CreateTableQuery) Model(model interface{}) *CreateTableQuery {
-	q.setTableModel(model)
+	q.setModel(model)
+	return q
+}
+
+func (q *CreateTableQuery) Err(err error) *CreateTableQuery {
+	q.setErr(err)
 	return q
 }
 
@@ -59,7 +77,7 @@ func (q *CreateTableQuery) TableExpr(query string, args ...interface{}) *CreateT
 }
 
 func (q *CreateTableQuery) ModelTableExpr(query string, args ...interface{}) *CreateTableQuery {
-	q.modelTable = schema.SafeQuery(query, args)
+	q.modelTableName = schema.SafeQuery(query, args)
 	return q
 }
 
@@ -80,7 +98,12 @@ func (q *CreateTableQuery) IfNotExists() *CreateTableQuery {
 	return q
 }
 
+// Varchar sets default length for VARCHAR columns.
 func (q *CreateTableQuery) Varchar(n int) *CreateTableQuery {
+	if n <= 0 {
+		q.setErr(fmt.Errorf("bun: illegal VARCHAR length: %d", n))
+		return q
+	}
 	q.varchar = n
 	return q
 }
@@ -89,6 +112,24 @@ func (q *CreateTableQuery) ForeignKey(query string, args ...interface{}) *Create
 	q.fks = append(q.fks, schema.SafeQuery(query, args))
 	return q
 }
+
+func (q *CreateTableQuery) PartitionBy(query string, args ...interface{}) *CreateTableQuery {
+	q.partitionBy = schema.SafeQuery(query, args)
+	return q
+}
+
+func (q *CreateTableQuery) TableSpace(tablespace string) *CreateTableQuery {
+	q.tablespace = schema.UnsafeIdent(tablespace)
+	return q
+}
+
+// WithForeignKeys adds a FOREIGN KEY clause for each of the model's existing relations.
+func (q *CreateTableQuery) WithForeignKeys() *CreateTableQuery {
+	q.fksFromRel = true
+	return q
+}
+
+// ------------------------------------------------------------------------------
 
 func (q *CreateTableQuery) Operation() string {
 	return "CREATE TABLE"
@@ -107,7 +148,7 @@ func (q *CreateTableQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []by
 		b = append(b, "TEMP "...)
 	}
 	b = append(b, "TABLE "...)
-	if q.ifNotExists {
+	if q.ifNotExists && fmter.HasFeature(feature.TableNotExists) {
 		b = append(b, "IF NOT EXISTS "...)
 	}
 	b, err = q.appendFirstTable(fmter, b)
@@ -125,12 +166,15 @@ func (q *CreateTableQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []by
 		b = append(b, field.SQLName...)
 		b = append(b, " "...)
 		b = q.appendSQLType(b, field)
-		if field.NotNull {
+		if field.NotNull && q.db.dialect.Name() != dialect.Oracle {
 			b = append(b, " NOT NULL"...)
 		}
-		if fmter.Dialect().Features().Has(feature.AutoIncrement) && field.AutoIncrement {
-			b = append(b, " AUTO_INCREMENT"...)
+
+		if (field.Identity && fmter.HasFeature(feature.GeneratedIdentity)) ||
+			(field.AutoIncrement && (fmter.HasFeature(feature.AutoIncrement) || fmter.HasFeature(feature.Identity))) {
+			b = q.db.dialect.AppendSequence(b, q.table, field)
 		}
+
 		if field.SQLDefault != "" {
 			b = append(b, " DEFAULT "...)
 			b = append(b, field.SQLDefault...)
@@ -150,8 +194,20 @@ func (q *CreateTableQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []by
 		}
 	}
 
-	b = q.appendPKConstraint(b, q.table.PKs)
+	// In SQLite AUTOINCREMENT is only valid for INTEGER PRIMARY KEY columns, so it might be that
+	// a primary key constraint has already been created in dialect.AppendSequence() call above.
+	// See sqldialect.Dialect.AppendSequence() for more details.
+	if len(q.table.PKs) > 0 && !bytes.Contains(b, []byte("PRIMARY KEY")) {
+		b = q.appendPKConstraint(b, q.table.PKs)
+	}
 	b = q.appendUniqueConstraints(fmter, b)
+
+	if q.fksFromRel {
+		b, err = q.appendFKConstraintsRel(fmter, b)
+		if err != nil {
+			return nil, err
+		}
+	}
 	b, err = q.appendFKConstraints(fmter, b)
 	if err != nil {
 		return nil, err
@@ -179,19 +235,27 @@ func (q *CreateTableQuery) AppendQuery(fmter schema.Formatter, b []byte) (_ []by
 }
 
 func (q *CreateTableQuery) appendSQLType(b []byte, field *schema.Field) []byte {
-	if field.CreateTableSQLType != field.DiscoveredSQLType {
+	// Most of the time these two will match, but for the cases where DiscoveredSQLType is dialect-specific,
+	// e.g. pgdialect would change sqltype.SmallInt to pgTypeSmallSerial for columns that have `bun:",autoincrement"`
+	if !strings.EqualFold(field.CreateTableSQLType, field.DiscoveredSQLType) {
 		return append(b, field.CreateTableSQLType...)
 	}
 
-	if q.varchar > 0 &&
-		field.CreateTableSQLType == sqltype.VarChar {
-		b = append(b, "varchar("...)
-		b = strconv.AppendInt(b, int64(q.varchar), 10)
-		b = append(b, ")"...)
-		return b
+	// For all common SQL types except VARCHAR, both UserDefinedSQLType and DiscoveredSQLType specify the correct type,
+	// and we needn't modify it. For VARCHAR columns, we will stop to check if a valid length has been set in .Varchar(int).
+	if !strings.EqualFold(field.CreateTableSQLType, sqltype.VarChar) || q.varchar <= 0 {
+		return append(b, field.CreateTableSQLType...)
 	}
 
-	return append(b, field.CreateTableSQLType...)
+	if q.db.dialect.Name() == dialect.Oracle {
+		b = append(b, "VARCHAR2"...)
+	} else {
+		b = append(b, sqltype.VarChar...)
+	}
+	b = append(b, "("...)
+	b = strconv.AppendInt(b, int64(q.varchar), 10)
+	b = append(b, ")"...)
+	return b
 }
 
 func (q *CreateTableQuery) appendUniqueConstraints(fmter schema.Formatter, b []byte) []byte {
@@ -231,13 +295,38 @@ func (q *CreateTableQuery) appendUniqueConstraint(
 	return b
 }
 
+// appendFKConstraintsRel appends a FOREIGN KEY clause for each of the model's existing relations.
+func (q *CreateTableQuery) appendFKConstraintsRel(fmter schema.Formatter, b []byte) (_ []byte, err error) {
+	for _, rel := range q.tableModel.Table().Relations {
+		if rel.References() {
+			b, err = q.appendFK(fmter, b, schema.QueryWithArgs{
+				Query: "(?) REFERENCES ? (?) ? ?",
+				Args: []interface{}{
+					Safe(appendColumns(nil, "", rel.BasePKs)),
+					rel.JoinTable.SQLName,
+					Safe(appendColumns(nil, "", rel.JoinPKs)),
+					Safe(rel.OnUpdate),
+					Safe(rel.OnDelete),
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return b, nil
+}
+
+func (q *CreateTableQuery) appendFK(fmter schema.Formatter, b []byte, fk schema.QueryWithArgs) (_ []byte, err error) {
+	b = append(b, ", FOREIGN KEY "...)
+	return fk.AppendQuery(fmter, b)
+}
+
 func (q *CreateTableQuery) appendFKConstraints(
 	fmter schema.Formatter, b []byte,
 ) (_ []byte, err error) {
 	for _, fk := range q.fks {
-		b = append(b, ", FOREIGN KEY "...)
-		b, err = fk.AppendQuery(fmter, b)
-		if err != nil {
+		if b, err = q.appendFK(fmter, b, fk); err != nil {
 			return nil, err
 		}
 	}
@@ -245,10 +334,6 @@ func (q *CreateTableQuery) appendFKConstraints(
 }
 
 func (q *CreateTableQuery) appendPKConstraint(b []byte, pks []*schema.Field) []byte {
-	if len(pks) == 0 {
-		return b
-	}
-
 	b = append(b, ", PRIMARY KEY ("...)
 	b = appendColumns(b, "", pks)
 	b = append(b, ")"...)
@@ -299,4 +384,13 @@ func (q *CreateTableQuery) afterCreateTableHook(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (q *CreateTableQuery) String() string {
+	buf, err := q.AppendQuery(q.db.Formatter(), nil)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(buf)
 }

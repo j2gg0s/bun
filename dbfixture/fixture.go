@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"text/template/parse"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -38,7 +39,7 @@ func WithRecreateTables() FixtureOption {
 
 func WithTruncateTables() FixtureOption {
 	return func(l *Fixture) {
-		if l.truncateTables {
+		if l.recreateTables {
 			panic("don't use WithTruncateTables together with WithRecreateTables")
 		}
 		l.truncateTables = true
@@ -68,7 +69,7 @@ func WithBeforeInsert(fn BeforeInsertFunc) FixtureOption {
 }
 
 type Fixture struct {
-	db *bun.DB
+	db bun.IDB
 
 	recreateTables bool
 	truncateTables bool
@@ -80,7 +81,7 @@ type Fixture struct {
 	modelRows map[string]map[string]interface{}
 }
 
-func New(db *bun.DB, opts ...FixtureOption) *Fixture {
+func New(db bun.IDB, opts ...FixtureOption) *Fixture {
 	f := &Fixture{
 		db: db,
 
@@ -244,18 +245,16 @@ func (f *Fixture) decodeField(strct reflect.Value, field *schema.Field, value *y
 
 	if ss := funcNameRE.FindStringSubmatch(value.Value); len(ss) > 0 {
 		if fn, ok := f.funcMap[ss[1]].(func() interface{}); ok {
-			return field.ScanValue(strct, fn())
+			return scanFieldValue(strct, field, fn())
 		}
 	}
 
 	if tplRE.MatchString(value.Value) {
-		str, err := f.eval(value.Value)
+		src, err := f.eval(value.Value)
 		if err != nil {
 			return err
 		}
-		if str != value.Value {
-			return field.ScanValue(strct, str)
-		}
+		return scanFieldValue(strct, field, src)
 	}
 
 	if v, ok := iface.(yaml.Unmarshaler); ok {
@@ -282,6 +281,7 @@ func (f *Fixture) dropTable(ctx context.Context, table *schema.Table) error {
 	if _, err := f.db.NewDropTable().
 		Model(table.ZeroIface).
 		IfExists().
+		Cascade().
 		Exec(ctx); err != nil {
 		return err
 	}
@@ -303,6 +303,7 @@ func (f *Fixture) truncateTable(ctx context.Context, table *schema.Table) error 
 
 	if _, err := f.db.NewTruncateTable().
 		Model(table.ZeroIface).
+		Cascade().
 		Exec(ctx); err != nil {
 		return err
 	}
@@ -310,19 +311,98 @@ func (f *Fixture) truncateTable(ctx context.Context, table *schema.Table) error 
 	return nil
 }
 
-func (f *Fixture) eval(templ string) (string, error) {
+func (f *Fixture) eval(templ string) (interface{}, error) {
+	if v, ok := f.evalFuncCall(templ); ok {
+		return v, nil
+	}
+
 	tpl, err := template.New("").Funcs(f.funcMap).Parse(templ)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var buf bytes.Buffer
 
 	if err := tpl.Execute(&buf, f.modelRows); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	return buf.String(), nil
+}
+
+func (f *Fixture) evalFuncCall(templ string) (interface{}, bool) {
+	tree, err := parse.Parse("", templ, "{{", "}}", f.funcMap)
+	if err != nil {
+		return nil, false
+	}
+
+	root := tree[""].Root
+	if len(root.Nodes) != 1 {
+		return nil, false
+	}
+
+	action, ok := root.Nodes[0].(*parse.ActionNode)
+	if !ok {
+		return nil, false
+	}
+
+	if len(action.Pipe.Cmds) != 1 {
+		return nil, false
+	}
+
+	args := action.Pipe.Cmds[0].Args
+	if len(args) == 0 {
+		return nil, false
+	}
+
+	funcName, ok := args[0].(*parse.IdentifierNode)
+	if !ok {
+		return nil, false
+	}
+
+	fn, ok := f.funcMap[funcName.Ident]
+	if !ok {
+		return nil, false
+	}
+
+	fnValue := reflect.ValueOf(fn)
+	fnType := fnValue.Type()
+	if fnType.NumOut() != 1 {
+		return nil, false
+	}
+
+	args = args[1:]
+	if len(args) != fnType.NumIn() {
+		return nil, false
+	}
+	argValues := make([]reflect.Value, len(args))
+
+	for i, node := range args {
+		switch node := node.(type) {
+		case *parse.StringNode:
+			argValues[i] = reflect.ValueOf(node.Text)
+		case *parse.NumberNode:
+			switch {
+			case node.IsInt:
+				argValues[i] = reflect.ValueOf(node.Int64)
+			case node.IsUint:
+				argValues[i] = reflect.ValueOf(node.Uint64)
+			case node.IsFloat:
+				argValues[i] = reflect.ValueOf(node.Float64)
+			case node.IsComplex:
+				argValues[i] = reflect.ValueOf(node.Complex128)
+			default:
+				argValues[i] = reflect.ValueOf(node.Text)
+			}
+		case *parse.BoolNode:
+			argValues[i] = reflect.ValueOf(node.True)
+		default:
+			return nil, false
+		}
+	}
+
+	out := fnValue.Call(argValues)
+	return out[0].Interface(), true
 }
 
 type fixtureData struct {
@@ -354,4 +434,12 @@ func defaultFuncs() template.FuncMap {
 			return time.Now()
 		},
 	}
+}
+
+func scanFieldValue(strct reflect.Value, field *schema.Field, value interface{}) error {
+	if v := reflect.ValueOf(value); v.CanConvert(field.StructField.Type) {
+		field.Value(strct).Set(v.Convert(field.StructField.Type))
+		return nil
+	}
+	return field.ScanValue(strct, value)
 }

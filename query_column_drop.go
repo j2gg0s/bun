@@ -13,6 +13,8 @@ type DropColumnQuery struct {
 	baseQuery
 }
 
+var _ Query = (*DropColumnQuery)(nil)
+
 func NewDropColumnQuery(db *DB) *DropColumnQuery {
 	q := &DropColumnQuery{
 		baseQuery: baseQuery{
@@ -29,7 +31,22 @@ func (q *DropColumnQuery) Conn(db IConn) *DropColumnQuery {
 }
 
 func (q *DropColumnQuery) Model(model interface{}) *DropColumnQuery {
-	q.setTableModel(model)
+	q.setModel(model)
+	return q
+}
+
+func (q *DropColumnQuery) Err(err error) *DropColumnQuery {
+	q.setErr(err)
+	return q
+}
+
+// Apply calls each function in fns, passing the DropColumnQuery as an argument.
+func (q *DropColumnQuery) Apply(fns ...func(*DropColumnQuery) *DropColumnQuery) *DropColumnQuery {
+	for _, fn := range fns {
+		if fn != nil {
+			q = fn(q)
+		}
+	}
 	return q
 }
 
@@ -48,7 +65,7 @@ func (q *DropColumnQuery) TableExpr(query string, args ...interface{}) *DropColu
 }
 
 func (q *DropColumnQuery) ModelTableExpr(query string, args ...interface{}) *DropColumnQuery {
-	q.modelTable = schema.SafeQuery(query, args)
+	q.modelTableName = schema.SafeQuery(query, args)
 	return q
 }
 

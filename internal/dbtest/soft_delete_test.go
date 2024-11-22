@@ -20,6 +20,7 @@ func TestSoftDelete(t *testing.T) {
 		{run: testSoftDeleteNilModel},
 		{run: testSoftDeleteAPI},
 		{run: testSoftDeleteBulk},
+		{run: testSoftDeleteForce},
 	}
 	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
 		for _, test := range tests {
@@ -31,18 +32,16 @@ func TestSoftDelete(t *testing.T) {
 }
 
 type Video struct {
-	ID        int64
+	ID        int64 `bun:",pk,autoincrement"`
 	Name      string
-	DeletedAt time.Time `bun:",soft_delete"`
+	DeletedAt time.Time `bun:",soft_delete,nullzero"`
 }
 
 func testSoftDeleteNilModel(t *testing.T, db *bun.DB) {
 	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Video)(nil))
 
-	err := db.ResetModel(ctx, (*Video)(nil))
-	require.NoError(t, err)
-
-	_, err = db.NewDelete().Model((*Video)(nil)).Where("1 = 1").Exec(ctx)
+	_, err := db.NewDelete().Model((*Video)(nil)).Where("1 = 1").Exec(ctx)
 	require.NoError(t, err)
 
 	_, err = db.NewDelete().Model((*Video)(nil)).Where("1 = 1").ForceDelete().Exec(ctx)
@@ -51,14 +50,12 @@ func testSoftDeleteNilModel(t *testing.T, db *bun.DB) {
 
 func testSoftDeleteAPI(t *testing.T, db *bun.DB) {
 	ctx := context.Background()
-
-	err := db.ResetModel(ctx, (*Video)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Video)(nil))
 
 	video1 := &Video{
 		ID: 1,
 	}
-	_, err = db.NewInsert().Model(video1).Exec(ctx)
+	_, err := db.NewInsert().Model(video1).Exec(ctx)
 	require.NoError(t, err)
 
 	// Count visible videos.
@@ -104,17 +101,66 @@ func testSoftDeleteAPI(t *testing.T, db *bun.DB) {
 	require.Equal(t, 0, count)
 }
 
+func testSoftDeleteForce(t *testing.T, db *bun.DB) {
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Video)(nil))
+
+	videos := []Video{
+		{Name: "video1"},
+		{Name: "video2"},
+		{Name: "video3"},
+	}
+
+	_, err := db.NewInsert().Model(&videos).Exec(ctx)
+	require.NoError(t, err)
+
+	// Force delete video1.
+	_, err = db.NewDelete().Model((*Video)(nil)).Where("name = ?", "video1").ForceDelete().Exec(ctx)
+	require.NoError(t, err)
+
+	// Soft delete video2.
+	_, err = db.NewDelete().Model((*Video)(nil)).Where("name = ?", "video2").Exec(ctx)
+	require.NoError(t, err)
+
+	// Check one visible video.
+	var res []Video
+	err = db.NewSelect().Model((*Video)(nil)).Column("name").Scan(ctx, &res)
+	require.NoError(t, err)
+	require.Equal(t, []Video{{Name: "video3"}}, res)
+
+	// Check one soft deleted video.
+	err = db.NewSelect().Model((*Video)(nil)).Column("name").WhereDeleted().Scan(ctx, &res)
+	require.NoError(t, err)
+	require.Equal(t, []Video{{Name: "video2"}}, res)
+
+	// Force delete only soft deleted videos.
+	_, err = db.NewDelete().Model((*Video)(nil)).WhereDeleted().ForceDelete().Exec(ctx)
+	require.NoError(t, err)
+
+	// Check one remaining video.
+	err = db.NewSelect().Model((*Video)(nil)).Column("name").WhereAllWithDeleted().Scan(ctx, &res)
+	require.NoError(t, err)
+	require.Equal(t, []Video{{Name: "video3"}}, res)
+
+	// Force delete all videos.
+	_, err = db.NewDelete().Model((*Video)(nil)).Where("1 = 1").ForceDelete().Exec(ctx)
+	require.NoError(t, err)
+
+	// Check no remaining videos.
+	count, err := db.NewSelect().Model((*Video)(nil)).WhereAllWithDeleted().Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
 func testSoftDeleteBulk(t *testing.T, db *bun.DB) {
 	ctx := context.Background()
-
-	err := db.ResetModel(ctx, (*Video)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*Video)(nil))
 
 	videos := []Video{
 		{Name: "video1"},
 		{Name: "video2"},
 	}
-	_, err = db.NewInsert().Model(&videos).Exec(ctx)
+	_, err := db.NewInsert().Model(&videos).Exec(ctx)
 	require.NoError(t, err)
 
 	if db.Dialect().Features().Has(feature.CTE) {

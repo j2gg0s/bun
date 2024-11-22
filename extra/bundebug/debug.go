@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"time"
@@ -30,19 +31,30 @@ func WithVerbose(on bool) Option {
 	}
 }
 
-// WithEnv configures the hook using the environment variable value.
+// WithWriter sets the log output to an io.Writer
+// the default is os.Stderr
+func WithWriter(w io.Writer) Option {
+	return func(h *QueryHook) {
+		h.writer = w
+	}
+}
+
+// FromEnv configures the hook using the environment variable value.
 // For example, WithEnv("BUNDEBUG"):
-//    - BUNDEBUG=0 - disables the hook.
-//    - BUNDEBUG=1 - enables the hook.
-//    - BUNDEBUG=2 - enables the hook and verbose mode.
-func FromEnv(key string) Option {
-	if key == "" {
-		key = "BUNDEBUG"
+//   - BUNDEBUG=0 - disables the hook.
+//   - BUNDEBUG=1 - enables the hook.
+//   - BUNDEBUG=2 - enables the hook and verbose mode.
+func FromEnv(keys ...string) Option {
+	if len(keys) == 0 {
+		keys = []string{"BUNDEBUG"}
 	}
 	return func(h *QueryHook) {
-		if env, ok := os.LookupEnv(key); ok {
-			h.enabled = env != "" && env != "0"
-			h.verbose = env == "2"
+		for _, key := range keys {
+			if env, ok := os.LookupEnv(key); ok {
+				h.enabled = env != "" && env != "0"
+				h.verbose = env == "2"
+				break
+			}
 		}
 	}
 }
@@ -50,6 +62,7 @@ func FromEnv(key string) Option {
 type QueryHook struct {
 	enabled bool
 	verbose bool
+	writer  io.Writer
 }
 
 var _ bun.QueryHook = (*QueryHook)(nil)
@@ -57,6 +70,7 @@ var _ bun.QueryHook = (*QueryHook)(nil)
 func NewQueryHook(opts ...Option) *QueryHook {
 	h := &QueryHook{
 		enabled: true,
+		writer:  os.Stderr,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -77,7 +91,7 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 
 	if !h.verbose {
 		switch event.Err {
-		case nil, sql.ErrNoRows:
+		case nil, sql.ErrNoRows, sql.ErrTxDone:
 			return
 		}
 	}
@@ -101,7 +115,7 @@ func (h *QueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 		)
 	}
 
-	fmt.Println(args...)
+	fmt.Fprintln(h.writer, args...)
 }
 
 func formatOperation(event *bun.QueryEvent) string {

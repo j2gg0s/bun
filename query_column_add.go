@@ -15,6 +15,8 @@ type AddColumnQuery struct {
 	ifNotExists bool
 }
 
+var _ Query = (*AddColumnQuery)(nil)
+
 func NewAddColumnQuery(db *DB) *AddColumnQuery {
 	q := &AddColumnQuery{
 		baseQuery: baseQuery{
@@ -31,7 +33,22 @@ func (q *AddColumnQuery) Conn(db IConn) *AddColumnQuery {
 }
 
 func (q *AddColumnQuery) Model(model interface{}) *AddColumnQuery {
-	q.setTableModel(model)
+	q.setModel(model)
+	return q
+}
+
+func (q *AddColumnQuery) Err(err error) *AddColumnQuery {
+	q.setErr(err)
+	return q
+}
+
+// Apply calls each function in fns, passing the AddColumnQuery as an argument.
+func (q *AddColumnQuery) Apply(fns ...func(*AddColumnQuery) *AddColumnQuery) *AddColumnQuery {
+	for _, fn := range fns {
+		if fn != nil {
+			q = fn(q)
+		}
+	}
 	return q
 }
 
@@ -50,7 +67,7 @@ func (q *AddColumnQuery) TableExpr(query string, args ...interface{}) *AddColumn
 }
 
 func (q *AddColumnQuery) ModelTableExpr(query string, args ...interface{}) *AddColumnQuery {
-	q.modelTable = schema.SafeQuery(query, args)
+	q.modelTableName = schema.SafeQuery(query, args)
 	return q
 }
 

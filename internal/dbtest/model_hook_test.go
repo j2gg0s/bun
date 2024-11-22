@@ -39,8 +39,7 @@ func TestModelHook(t *testing.T) {
 }
 
 func testModelHook(t *testing.T, dbName string, db *bun.DB) {
-	err := db.ResetModel(ctx, (*ModelHookTest)(nil))
-	require.NoError(t, err)
+	mustResetModel(t, ctx, db, (*ModelHookTest)(nil))
 
 	{
 		hook := &ModelHookTest{ID: 1}
@@ -89,7 +88,7 @@ func testModelHook(t *testing.T, dbName string, db *bun.DB) {
 	}
 
 	{
-		_, err := db.NewDelete().Model((*ModelHookTest)(nil)).Where("TRUE").Exec(ctx)
+		_, err := db.NewDelete().Model((*ModelHookTest)(nil)).Where("1 = 1").Exec(ctx)
 		require.NoError(t, err)
 		require.Equal(t, []string{"BeforeDelete", "AfterDelete"}, events.Flush())
 	}
@@ -120,7 +119,7 @@ func testModelHook(t *testing.T, dbName string, db *bun.DB) {
 }
 
 type ModelHookTest struct {
-	ID    int
+	ID    int `bun:",pk"`
 	Value string
 }
 

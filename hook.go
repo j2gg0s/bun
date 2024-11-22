@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/uptrace/bun/schema"
 )
@@ -13,9 +14,10 @@ import (
 type QueryEvent struct {
 	DB *DB
 
-	QueryAppender schema.QueryAppender // Deprecated: use IQuery instead
+	QueryAppender schema.QueryAppender // DEPRECATED: use IQuery instead
 	IQuery        Query
 	Query         string
+	QueryTemplate string
 	QueryArgs     []interface{}
 	Model         Model
 
@@ -34,13 +36,15 @@ func (e *QueryEvent) Operation() string {
 }
 
 func queryOperation(query string) string {
-	if idx := strings.IndexByte(query, ' '); idx > 0 {
-		query = query[:idx]
+	queryOp := strings.TrimLeftFunc(query, unicode.IsSpace)
+
+	if idx := strings.IndexByte(queryOp, ' '); idx > 0 {
+		queryOp = queryOp[:idx]
 	}
-	if len(query) > 16 {
-		query = query[:16]
+	if len(queryOp) > 16 {
+		queryOp = queryOp[:16]
 	}
-	return query
+	return queryOp
 }
 
 type QueryHook interface {
@@ -51,8 +55,9 @@ type QueryHook interface {
 func (db *DB) beforeQuery(
 	ctx context.Context,
 	iquery Query,
-	query string,
+	queryTemplate string,
 	queryArgs []interface{},
+	query string,
 	model Model,
 ) (context.Context, *QueryEvent) {
 	atomic.AddUint32(&db.stats.Queries, 1)
@@ -68,6 +73,7 @@ func (db *DB) beforeQuery(
 		QueryAppender: iquery,
 		IQuery:        iquery,
 		Query:         query,
+		QueryTemplate: queryTemplate,
 		QueryArgs:     queryArgs,
 
 		StartTime: time.Now(),
